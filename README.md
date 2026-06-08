@@ -1,0 +1,103 @@
+# Internal Documentation RAG
+
+Grounded, cited answers over internal company documentation, behind Google
+Workspace SSO. Documents in S3 (PDF / DOCX / Markdown / HTML / TXT) are chunked,
+embedded, and indexed in Postgres (pgvector); queries run hybrid retrieval
+(dense + lexical) with reranking, then a Claude model — chosen by a cost-aware
+routing layer — synthesizes an answer with inline citations.
+
+> **Build status:** Phase 1 (scaffold + local ingestion) is implemented and
+> tested. Phases 2–4 (retrieval/generation/eval, UI/auth, IaC/deploy) follow the
+> plan in `claude_code_rag_prompt.md`.
+
+## Architecture (target)
+
+```
+              Google SSO (OIDC, hd-gated)
+                        │
+   Next.js UI ──────────┼─────────► FastAPI backend ──► hybrid retrieval ──► rerank ──► Claude (routed)
+   (stream + citations)               /query (SSE)        (pgvector +              Haiku/Sonnet/Opus
+                                      /ingest /feedback     tsvector, RRF)
+                                      /health
+                        ▲
+   S3 docs ─► SQS ─► ingest worker ─► loaders → clean → chunk → embed (Voyage) → upsert (pgvector)
+   (ObjectCreated/Removed)            (idempotent: doc + chunk content hashes)
+```
+
+Every external boundary (embeddings, rerank, LLM, vector DB) is swappable behind
+a Protocol in `backend/app/core/interfaces.py`; pgvector can be replaced by a
+managed vector DB without touching retrieval or generation.
+
+## Requirements
+
+- Python 3.12
+- Docker (for local Postgres + pgvector) — Phase 1 ingestion against a real DB
+- A `VOYAGE_API_KEY` (embeddings/rerank) and `ANTHROPIC_API_KEY` (generation).
+  These incur cost; nothing calls them until you run ingestion/queries.
+
+## Setup
+
+```bash
+python -m venv .venv
+# Windows:  .\.venv\Scripts\Activate.ps1     Unix: source .venv/bin/activate
+pip install -e ".[dev,openai]"
+cp .env.example .env        # fill in keys; never commit .env
+```
+
+> **Windows note:** if `pip install -e .` fails with `WinError 32` on
+> `*.egg-info` (a real-time antivirus scanner locking the in-tree build file),
+> either add a Defender exclusion for the project folder, or install the
+> dependencies directly and run via `PYTHONPATH` — tests and module entrypoints
+> work without packaging because the import roots are configured:
+> `set PYTHONPATH=backend;.` (PowerShell: `$env:PYTHONPATH="backend;."`).
+
+## Configuration
+
+All knobs live in `backend/app/config.py` and are documented in `.env.example`:
+DB URL, document source (local folder vs S3), embedding/rerank provider,
+chunking, retrieval top-k's, the model-routing thresholds, and the Google SSO
+hosted-domain gate. No secrets are hardcoded; in AWS these come from Secrets
+Manager.
+
+## Run locally (Phase 1)
+
+```bash
+make db-up                          # start Postgres + pgvector
+make migrate                        # apply schema (idempotent)
+make ingest SOURCE=./sample_docs    # backfill the index
+make ingest SOURCE=./sample_docs    # re-run: everything reports "skipped"
+make test                           # unit tests
+make lint                           # ruff
+```
+
+The ingest run prints a JSON summary: `docs_seen / changed / skipped /
+chunks_upserted / chunks_deleted / docs_deleted / failures`. Re-indexing is
+idempotent (doc- and chunk-level content hashes) and prunes deleted documents.
+
+### Verify idempotency & deletion without a DB
+
+`python scripts/smoke_phase1.py` imports every module and runs the loaders +
+chunker over `sample_docs/` (no DB or API key needed). The idempotency and
+deletion-detection logic is covered by `ingestion/tests/test_indexer.py` using
+in-memory fakes.
+
+## Layout
+
+| Path | What |
+|------|------|
+| `backend/app/core/` | Shared contract: DTOs + swappable Protocols |
+| `backend/app/embeddings/`, `rerank/`, `vectorstore/`, `llm/` | Provider impls |
+| `backend/app/db/` | pgvector pool + SQL migrations |
+| `ingestion/pipeline/` | Loaders, chunking, hashing, sources, indexer, CLI, SQS worker |
+| `eval/` | Evaluation harness (Phase 2) |
+| `frontend/` | Next.js search UI (Phase 3) |
+| `infra/terraform/` | AWS IaC (Phase 4) |
+
+## Cost (will be finalized with the deploy)
+
+Claude generation dominates; the routing layer is the primary lever — easy,
+high-confidence queries go to Haiku ($1/$5 per 1M), typical to Sonnet
+($3/$15), and only low-confidence/long-context/complex queries to Opus
+($5/$25). Prompt-caching the system + retrieved-context prefix further cuts
+repeated-context cost. Voyage embeddings/rerank are cheap; RDS + App Runner are
+low-tens of dollars/month at modest traffic.
