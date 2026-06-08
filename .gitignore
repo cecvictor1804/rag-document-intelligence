@@ -10,6 +10,7 @@ __pycache__/
 venv/
 *.egg-info/
 .pytest_cache/
+pytest-cache-files-*/
 .mypy_cache/
 .ruff_cache/
 .coverage
@@ -39,3 +40,6 @@ Thumbs.db
 # Local data
 sample_docs/.cache/
 *.log
+
+# Internal design/prompt doc — kept local, not published
+claude_code_rag_prompt.md
