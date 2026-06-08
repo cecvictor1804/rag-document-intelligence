@@ -6,9 +6,11 @@ embedded, and indexed in Postgres (pgvector); queries run hybrid retrieval
 (dense + lexical) with reranking, then a Claude model — chosen by a cost-aware
 routing layer — synthesizes an answer with inline citations.
 
-> **Build status:** Phase 1 (scaffold + local ingestion) is implemented and
-> tested. Phases 2–4 (retrieval/generation/eval, UI/auth, IaC/deploy) follow the
-> plan in `claude_code_rag_prompt.md`.
+> **Build status:** Phase 1 (scaffold + local ingestion) and the Phase 2 query
+> **engine** (hybrid retrieval → rerank → cost-routed Claude generation, plus the
+> eval harness) are implemented and tested. Still to come: the HTTP API (Phase 2b:
+> FastAPI `/query` SSE, `/feedback`, `/health`), UI/auth (Phase 3), and IaC/deploy
+> (Phase 4) — see `claude_code_rag_prompt.md`.
 
 ## Architecture (target)
 
@@ -81,12 +83,35 @@ chunker over `sample_docs/` (no DB or API key needed). The idempotency and
 deletion-detection logic is covered by `ingestion/tests/test_indexer.py` using
 in-memory fakes.
 
+## Query engine & evaluation (Phase 2)
+
+The query path is implemented as importable, unit-tested modules (no HTTP yet — the
+FastAPI layer is Phase 2b). A query is embedded, searched both ways (dense HNSW +
+lexical tsvector), fused with Reciprocal Rank Fusion, reranked, then a cost-aware
+router picks a Claude model (Haiku/Sonnet/Opus) that streams a grounded answer with
+inline `[n]` citations. If the best reranked chunk falls below `MIN_RERANK_SCORE`,
+the engine returns "I don't know" **without** calling Claude. Everything wires up in
+`backend/app/deps.py` (`answer_service()`), the seam the future API imports.
+
+```bash
+make test                       # all engine unit tests — no DB, no API keys (fakes)
+make eval                       # retrieval metrics + LLM-judge groundedness (needs DB + keys)
+python -m eval.run_eval --no-judge   # retrieval metrics only — deterministic, no API cost
+```
+
+`eval/cases.yaml` holds the question → `expected_doc_ids` cases over `sample_docs/`.
+**To add a case**, append an entry (`question:` + `expected_doc_ids:` list of the
+doc_ids that should ground a correct answer). `run_eval` reports per-case
+hit-rate@k, MRR, recall@k, and (unless `--no-judge`) a groundedness score; the
+aggregate row is the mean across cases.
+
 ## Layout
 
 | Path | What |
 |------|------|
 | `backend/app/core/` | Shared contract: DTOs + swappable Protocols |
 | `backend/app/embeddings/`, `rerank/`, `vectorstore/`, `llm/` | Provider impls |
+| `backend/app/retrieval/`, `generation/`, `deps.py` | Hybrid retrieval, answer orchestration + routing, wiring |
 | `backend/app/db/` | pgvector pool + SQL migrations |
 | `ingestion/pipeline/` | Loaders, chunking, hashing, sources, indexer, CLI, SQS worker |
 | `eval/` | Evaluation harness (Phase 2) |

@@ -1,0 +1,33 @@
+# Evaluation cases over sample_docs/. `expected_doc_ids` are the doc_ids
+# (relative paths under LOCAL_DOCS_PATH) that should ground a correct answer.
+# Add cases here; the process for extending the set is documented in the README.
+
+- question: "How much can I expense for meals per day?"
+  expected_doc_ids: ["expense_policy.txt"]
+
+- question: "Do I need a receipt for a $30 expense?"
+  expected_doc_ids: ["expense_policy.txt"]
+
+- question: "Can I expense alcohol?"
+  expected_doc_ids: ["expense_policy.txt"]
+
+- question: "How long until an expense is reimbursed?"
+  expected_doc_ids: ["expense_policy.txt"]
+
+- question: "How do I set up my account on my first day?"
+  expected_doc_ids: ["onboarding.md"]
+
+- question: "How do I request new software?"
+  expected_doc_ids: ["onboarding.md"]
+
+- question: "How do I reset my password?"
+  expected_doc_ids: ["onboarding.md"]
+
+- question: "What do I need to sign in to the VPN?"
+  expected_doc_ids: ["vpn_access.html"]
+
+- question: "Which operating systems does the VPN client support?"
+  expected_doc_ids: ["vpn_access.html"]
+
+- question: "Where do I install the VPN client?"
+  expected_doc_ids: ["vpn_access.html"]

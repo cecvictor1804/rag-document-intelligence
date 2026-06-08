@@ -96,11 +96,13 @@ class VectorStore(Protocol):
 class LLMClient(Protocol):
     """Streams a grounded, cited answer from retrieved context."""
 
-    async def stream_grounded_answer(
+    def stream_grounded_answer(
         self,
         query: str,
         context: Sequence[RerankResult],
         model: str,
         effort: str,
         history: Sequence[Turn] = (),
-    ) -> AsyncIterator[AnswerEvent]: ...
+    ) -> AsyncIterator[AnswerEvent]:
+        """An async generator — call without `await`, then `async for` its events."""
+        ...

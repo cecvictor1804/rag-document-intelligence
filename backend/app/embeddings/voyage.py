@@ -7,6 +7,7 @@ retrieval quality. Calls are batched and wrapped with the resilience helper.
 from __future__ import annotations
 
 from collections.abc import Sequence
+from typing import cast
 
 import voyageai
 
@@ -31,7 +32,8 @@ class VoyageEmbeddingProvider:
                 resp = await self._client.embed(
                     batch, model=self._model, input_type=input_type
                 )
-                return resp.embeddings
+                # voyageai types `.embeddings` as float|int lists; it's floats.
+                return cast("list[list[float]]", resp.embeddings)
 
             out.extend(await with_retry(_call, what="voyage.embed"))
         return out
