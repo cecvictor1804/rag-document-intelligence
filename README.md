@@ -6,11 +6,11 @@ embedded, and indexed in Postgres (pgvector); queries run hybrid retrieval
 (dense + lexical) with reranking, then a Claude model — chosen by a cost-aware
 routing layer — synthesizes an answer with inline citations.
 
-> **Build status:** Phase 1 (scaffold + local ingestion) and the Phase 2 query
-> **engine** (hybrid retrieval → rerank → cost-routed Claude generation, plus the
-> eval harness) are implemented and tested. Still to come: the HTTP API (Phase 2b:
-> FastAPI `/query` SSE, `/feedback`, `/health`), UI/auth (Phase 3), and IaC/deploy
-> (Phase 4) — see `claude_code_rag_prompt.md`.
+> **Build status:** Phase 1 (scaffold + local ingestion), the Phase 2 query
+> **engine** (hybrid retrieval → rerank → cost-routed Claude generation + eval
+> harness), and the Phase 2b **HTTP API** (FastAPI `/query` SSE, `/feedback`,
+> `/health`) are implemented and tested. Still to come: UI/auth (Phase 3) and
+> IaC/deploy (Phase 4) — see `claude_code_rag_prompt.md`.
 
 ## Architecture (target)
 
@@ -83,6 +83,28 @@ chunker over `sample_docs/` (no DB or API key needed). The idempotency and
 deletion-detection logic is covered by `ingestion/tests/test_indexer.py` using
 in-memory fakes.
 
+## Run the API (Phase 2b)
+
+The engine is exposed over HTTP by a FastAPI app (`app.main:app`). It needs a
+populated DB (`make ingest`) plus `VOYAGE_API_KEY` and `ANTHROPIC_API_KEY`.
+
+```bash
+make db-up && make migrate && make ingest          # data
+uvicorn app.main:app --reload                      # serve on :8000
+# or the full containerized stack (builds backend/Dockerfile):
+docker compose --profile full up
+```
+
+Endpoints:
+- `POST /query` — body `{"query": "...", "history": [...]}`; streams **Server-Sent
+  Events**, one per answer event: `meta` (routing decision) → `token`… → `citations`
+  → `done`. Try it: `make query Q="How much can I expense for meals?"`.
+- `POST /feedback` — `{"query","answer","rating": 1|-1, "comment?", "chunk_ids?"}` →
+  `{"id": N}`; persists to the `feedback` table.
+- `GET /health` — `200 {"status":"ok"}` when the DB is reachable, else `503`.
+
+Auth is Phase 3 — `/query` is currently open (bind to localhost for local use).
+
 ## Query engine & evaluation (Phase 2)
 
 The query path is implemented as importable, unit-tested modules (no HTTP yet — the
@@ -112,6 +134,7 @@ aggregate row is the mean across cases.
 | `backend/app/core/` | Shared contract: DTOs + swappable Protocols |
 | `backend/app/embeddings/`, `rerank/`, `vectorstore/`, `llm/` | Provider impls |
 | `backend/app/retrieval/`, `generation/`, `deps.py` | Hybrid retrieval, answer orchestration + routing, wiring |
+| `backend/app/api/`, `main.py`, `feedback.py` | FastAPI routes (`/query` SSE, `/feedback`, `/health`) + app |
 | `backend/app/db/` | pgvector pool + SQL migrations |
 | `ingestion/pipeline/` | Loaders, chunking, hashing, sources, indexer, CLI, SQS worker |
 | `eval/` | Evaluation harness (Phase 2) |

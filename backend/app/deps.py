@@ -12,6 +12,7 @@ from functools import lru_cache
 from app.config import Settings, get_settings
 from app.core.interfaces import EmbeddingProvider, LLMClient, Reranker, VectorStore
 from app.embeddings import build_embedding_provider
+from app.feedback import Feedback, PgFeedback
 from app.generation.query_log import PgQueryLog, QueryLog
 from app.generation.service import AnswerService
 from app.llm import build_llm_client
@@ -48,6 +49,11 @@ def llm_client() -> LLMClient:
 @lru_cache
 def query_log() -> QueryLog:
     return PgQueryLog()
+
+
+@lru_cache
+def feedback() -> Feedback:
+    return PgFeedback()
 
 
 @lru_cache
