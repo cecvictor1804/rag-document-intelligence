@@ -8,9 +8,10 @@ routing layer — synthesizes an answer with inline citations.
 
 > **Build status:** Phase 1 (scaffold + local ingestion), the Phase 2 query
 > **engine** (hybrid retrieval → rerank → cost-routed Claude generation + eval
-> harness), and the Phase 2b **HTTP API** (FastAPI `/query` SSE, `/feedback`,
-> `/health`) are implemented and tested. Still to come: UI/auth (Phase 3) and
-> IaC/deploy (Phase 4) — see `claude_code_rag_prompt.md`.
+> harness), the Phase 2b **HTTP API** (FastAPI `/query` SSE, `/feedback`,
+> `/health`), and the Phase 3a **web UI** (Next.js + Tailwind + a polished
+> adaptive light/dark chat that streams cited answers) are implemented and tested.
+> Still to come: Google SSO auth (Phase 3b) and IaC/deploy (Phase 4).
 
 ## Architecture (target)
 
@@ -105,6 +106,24 @@ Endpoints:
 
 Auth is Phase 3 — `/query` is currently open (bind to localhost for local use).
 
+## Web UI (Phase 3a)
+
+A polished Next.js 16 + Tailwind v4 chat UI lives in `frontend/`. It streams the
+answer token-by-token with inline `[n]` citations, a Sources panel, a routed-model
+badge, thumbs up/down feedback, and an **adaptive light/dark theme** (system-aware,
+toggle, persisted). The browser talks only to Next.js, which proxies to the
+FastAPI backend (so there's no CORS and it's the seam for Phase 3b auth).
+
+```bash
+# 1) Backend running (see "Run the API" above), then:
+make frontend-install            # cd frontend && npm install
+cp frontend/.env.local.example frontend/.env.local   # BACKEND_URL=http://localhost:8000
+make frontend                    # cd frontend && npm run dev  → http://localhost:3000
+```
+
+Frontend checks: `cd frontend && npm run typecheck && npm test && npm run build`.
+Auth is **Phase 3b** — `/query` is open today, so run it on localhost.
+
 ## Query engine & evaluation (Phase 2)
 
 The query path is implemented as importable, unit-tested modules (no HTTP yet — the
@@ -138,7 +157,7 @@ aggregate row is the mean across cases.
 | `backend/app/db/` | pgvector pool + SQL migrations |
 | `ingestion/pipeline/` | Loaders, chunking, hashing, sources, indexer, CLI, SQS worker |
 | `eval/` | Evaluation harness (Phase 2) |
-| `frontend/` | Next.js search UI (Phase 3) |
+| `frontend/` | Next.js + Tailwind chat UI — streaming, citations, adaptive theme (Phase 3a) |
 | `infra/terraform/` | AWS IaC (Phase 4) |
 
 ## Cost (will be finalized with the deploy)

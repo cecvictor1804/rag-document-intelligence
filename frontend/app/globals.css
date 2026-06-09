@@ -1,0 +1,128 @@
+@import "tailwindcss";
+
+/* Class-based dark mode (next-themes sets .dark on <html>). */
+@custom-variant dark (&:is(.dark *));
+
+:root {
+  --radius: 0.85rem;
+
+  --background: oklch(0.991 0.002 250);
+  --foreground: oklch(0.18 0.01 260);
+
+  --card: oklch(1 0 0);
+  --card-foreground: var(--foreground);
+  --popover: oklch(1 0 0);
+  --popover-foreground: var(--foreground);
+
+  --primary: oklch(0.55 0.2 285);
+  --primary-foreground: oklch(0.99 0 0);
+
+  --secondary: oklch(0.965 0.005 260);
+  --secondary-foreground: oklch(0.21 0.01 260);
+
+  --muted: oklch(0.965 0.005 260);
+  --muted-foreground: oklch(0.52 0.012 262);
+
+  --accent: oklch(0.955 0.02 285);
+  --accent-foreground: oklch(0.24 0.06 285);
+
+  --destructive: oklch(0.58 0.22 27);
+
+  --border: oklch(0.9 0.005 262);
+  --input: oklch(0.92 0.005 262);
+  --ring: oklch(0.55 0.2 285);
+
+  --glow: oklch(0.7 0.18 300 / 0.18);
+}
+
+.dark {
+  --background: oklch(0.165 0.012 270);
+  --foreground: oklch(0.96 0.004 250);
+
+  --card: oklch(0.205 0.014 270);
+  --card-foreground: var(--foreground);
+  --popover: oklch(0.205 0.014 270);
+  --popover-foreground: var(--foreground);
+
+  --primary: oklch(0.74 0.16 292);
+  --primary-foreground: oklch(0.17 0.02 270);
+
+  --secondary: oklch(0.27 0.015 270);
+  --secondary-foreground: oklch(0.96 0 0);
+
+  --muted: oklch(0.26 0.015 270);
+  --muted-foreground: oklch(0.71 0.012 268);
+
+  --accent: oklch(0.31 0.03 292);
+  --accent-foreground: oklch(0.96 0 0);
+
+  --destructive: oklch(0.7 0.19 25);
+
+  --border: oklch(1 0 0 / 11%);
+  --input: oklch(1 0 0 / 15%);
+  --ring: oklch(0.74 0.16 292);
+
+  --glow: oklch(0.72 0.18 295 / 0.22);
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
+
+  --font-sans: var(--font-geist-sans);
+  --font-mono: var(--font-geist-mono);
+}
+
+@layer base {
+  * {
+    border-color: var(--border);
+  }
+  body {
+    background-color: var(--background);
+    color: var(--foreground);
+    font-family: var(--font-sans), ui-sans-serif, system-ui, sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+}
+
+/* Streaming caret */
+@keyframes caret-blink {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0; }
+}
+.caret-blink {
+  display: inline-block;
+  width: 0.5ch;
+  animation: caret-blink 1s steps(1) infinite;
+}
+
+/* Slow drift for the ambient background blobs */
+@keyframes blob-drift {
+  0%, 100% { transform: translate3d(0, 0, 0) scale(1); }
+  33% { transform: translate3d(3%, -4%, 0) scale(1.08); }
+  66% { transform: translate3d(-3%, 3%, 0) scale(0.96); }
+}
+.blob {
+  animation: blob-drift 18s ease-in-out infinite;
+}
