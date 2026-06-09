@@ -9,9 +9,11 @@ routing layer — synthesizes an answer with inline citations.
 > **Build status:** Phase 1 (scaffold + local ingestion), the Phase 2 query
 > **engine** (hybrid retrieval → rerank → cost-routed Claude generation + eval
 > harness), the Phase 2b **HTTP API** (FastAPI `/query` SSE, `/feedback`,
-> `/health`), and the Phase 3a **web UI** (Next.js + Tailwind + a polished
-> adaptive light/dark chat that streams cited answers) are implemented and tested.
-> Still to come: Google SSO auth (Phase 3b) and IaC/deploy (Phase 4).
+> `/health`), the Phase 3a **web UI** (Next.js + Tailwind + a polished adaptive
+> light/dark chat that streams cited answers), and the Phase 3b **Google
+> Workspace SSO gate** (OIDC login in Next.js; the backend independently verifies
+> the Google ID token on every call) are implemented and tested. Still to come:
+> IaC/deploy (Phase 4).
 
 ## Architecture (target)
 
@@ -104,7 +106,8 @@ Endpoints:
   `{"id": N}`; persists to the `feedback` table.
 - `GET /health` — `200 {"status":"ok"}` when the DB is reachable, else `503`.
 
-Auth is Phase 3 — `/query` is currently open (bind to localhost for local use).
+By default the API is **open** (`AUTH_ENABLED=false`) — bind to localhost. Set
+`AUTH_ENABLED=true` to require a verified Google ID token; see **Auth** below.
 
 ## Web UI (Phase 3a)
 
@@ -122,7 +125,42 @@ make frontend                    # cd frontend && npm run dev  → http://localh
 ```
 
 Frontend checks: `cd frontend && npm run typecheck && npm test && npm run build`.
-Auth is **Phase 3b** — `/query` is open today, so run it on localhost.
+With auth disabled (the default) it runs open, exactly like before; flip it on per
+the **Auth** section below.
+
+## Auth (Phase 3b) — Google Workspace SSO
+
+The browser only ever talks to Next.js, which acts as the confidential OAuth
+client (BFF): it runs the Google **authorization-code + PKCE** flow, stores an
+encrypted session cookie, and forwards the user's **Google ID token** to the
+backend as `Authorization: Bearer …` (refreshing it transparently when it
+nears expiry). The FastAPI backend verifies that token **independently** on every
+`/query` and `/feedback` with `google-auth` — signature, audience (the OAuth
+client id), and the Workspace `hd` (hosted-domain) claim — so the backend is
+secured on its own, not merely trusting the proxy. Login is hand-rolled with
+`jose` (no Auth.js); the gate lives in `frontend/proxy.ts`.
+
+**It's off by default.** With `AUTH_ENABLED` unset/false on both sides, the app
+behaves exactly like Phase 3a (no sign-in wall, callers are `anonymous@local`) —
+so local dev, tests, and CI need no Google credentials. Turn it on for
+staging/prod.
+
+To enable it locally you need a one-time Google OAuth client:
+
+1. In [Google Cloud Console](https://console.cloud.google.com/) → **APIs &
+   Services → Credentials**, create an **OAuth client ID** of type **Web
+   application**.
+2. Add the **Authorized redirect URI**: `http://localhost:3000/api/auth/callback`
+   (in prod, `${APP_URL}/api/auth/callback`). Scopes used: `openid email profile`.
+3. Copy the client id + secret into `frontend/.env.local` and set
+   `AUTH_ENABLED=true`, `GOOGLE_HOSTED_DOMAIN=yourcompany.com`,
+   `APP_URL=http://localhost:3000`, and an `AUTH_SECRET` (`openssl rand -base64 32`).
+4. On the backend set `AUTH_ENABLED=true`, `GOOGLE_OAUTH_CLIENT_ID=<same id>`, and
+   `GOOGLE_HOSTED_DOMAIN=yourcompany.com` (see `.env.example`).
+
+Then visiting `/` redirects to `/sign-in`; after Google consent you land on the
+chat with a user menu, questions carry your verified identity, accounts outside
+the hosted domain are rejected, and "Sign out" clears the session.
 
 ## Query engine & evaluation (Phase 2)
 

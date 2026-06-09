@@ -2,6 +2,11 @@ import { FileText } from "lucide-react";
 
 import { Chat } from "@/components/chat";
 import { ThemeToggle } from "@/components/theme-toggle";
+import { UserMenu } from "@/components/user-menu";
+
+// The header reflects the signed-in user (when auth is on), so render per-request
+// rather than prerendering a static, user-less page.
+export const dynamic = "force-dynamic";
 
 export default function Home() {
   return (
@@ -23,7 +28,10 @@ export default function Home() {
             </div>
             <span className="font-semibold tracking-tight">Internal Docs AI</span>
           </div>
-          <ThemeToggle />
+          <div className="flex items-center gap-1">
+            <ThemeToggle />
+            <UserMenu />
+          </div>
         </div>
       </header>
 

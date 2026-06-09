@@ -1,23 +1,38 @@
-// Proxies POST /api/feedback to the FastAPI backend's /feedback.
+// Proxies POST /api/feedback to the FastAPI backend's /feedback, attaching the
+// signed-in user's Bearer token when auth is enabled (so feedback is attributed
+// to the real account, not "anonymous").
+
+import { NextResponse } from "next/server";
+
+import { SESSION_COOKIE } from "@/lib/auth/config";
+import { authorizeBackendCall } from "@/lib/auth/bearer";
+import { sessionCookieOptions } from "@/lib/auth/session";
 
 const BACKEND_URL = process.env.BACKEND_URL ?? "http://localhost:8000";
 
 export const dynamic = "force-dynamic";
 
 export async function POST(request: Request): Promise<Response> {
+  const auth = await authorizeBackendCall();
+  if (!auth.ok) {
+    return Response.json({ error: auth.error }, { status: auth.status });
+  }
+
   const body = await request.text();
+  const headers: Record<string, string> = { "Content-Type": "application/json" };
+  if (auth.token) headers.Authorization = `Bearer ${auth.token}`;
 
   try {
-    const upstream = await fetch(`${BACKEND_URL}/feedback`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body,
-    });
+    const upstream = await fetch(`${BACKEND_URL}/feedback`, { method: "POST", headers, body });
     const text = await upstream.text();
-    return new Response(text, {
+    const res = new NextResponse(text, {
       status: upstream.status,
       headers: { "Content-Type": "application/json" },
     });
+    if (auth.refreshedCookie) {
+      res.cookies.set(SESSION_COOKIE, auth.refreshedCookie, sessionCookieOptions());
+    }
+    return res;
   } catch {
     return Response.json({ error: "Cannot reach the backend." }, { status: 502 });
   }

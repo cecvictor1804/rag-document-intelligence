@@ -67,9 +67,19 @@ class Settings(BaseSettings):
     router_default_effort: Literal["low", "medium", "high", "max"] = "medium"
 
     # ── Auth (Google Workspace SSO) ──────────────────────────────────────
+    # When False (default) the API is open and the caller is treated as an
+    # anonymous principal — this keeps local dev and tests runnable without a
+    # Google OAuth client. Set True in staging/prod to enforce the SSO gate.
+    auth_enabled: bool = False
     google_hosted_domain: str = ""
     google_oauth_client_id: str = ""
     oidc_audience: str = ""
+
+    @property
+    def oidc_expected_audience(self) -> str:
+        """The `aud` an incoming Google ID token must carry: the OAuth client
+        id, unless a distinct audience was configured."""
+        return self.oidc_audience or self.google_oauth_client_id
 
     # ── Ingestion worker ─────────────────────────────────────────────────
     ingest_sqs_queue_url: str = ""

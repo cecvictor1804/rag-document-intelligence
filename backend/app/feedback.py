@@ -1,7 +1,8 @@
 """Persist thumbs up/down feedback on answers (the `feedback` table).
 
-Stored for later evaluation. `user_email` is "anonymous" until Phase 3 adds the
-Google SSO gate (the column is NOT NULL).
+Stored for later evaluation. `user_email` comes from the verified Google
+principal (`app.auth`); it is `anonymous@local` when auth is disabled for local
+dev (the column is NOT NULL).
 """
 
 from __future__ import annotations

@@ -27,6 +27,7 @@ from app.api.schemas import (
     HealthResponse,
     QueryRequest,
 )
+from app.auth import Principal, require_user
 from app.core.models import AnswerEvent, AnswerEventType
 from app.db.pool import get_pool
 from app.feedback import Feedback
@@ -48,6 +49,7 @@ def _sse(ev: AnswerEvent) -> dict:
 async def query(
     req: QueryRequest,
     service: Annotated[AnswerService, Depends(deps.answer_service)],
+    user: Annotated[Principal, Depends(require_user)],
 ) -> EventSourceResponse:
     history = [t.to_turn() for t in req.history]
 
@@ -62,6 +64,7 @@ async def query(
 async def feedback(
     req: FeedbackRequest,
     sink: Annotated[Feedback, Depends(deps.feedback)],
+    user: Annotated[Principal, Depends(require_user)],
 ) -> FeedbackResponse:
     fid = await sink.record(
         query=req.query,
@@ -69,6 +72,7 @@ async def feedback(
         rating=req.rating,
         comment=req.comment,
         chunk_ids=req.chunk_ids,
+        user_email=user.email,
     )
     return FeedbackResponse(id=fid)
 
