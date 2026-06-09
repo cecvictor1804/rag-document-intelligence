@@ -4,7 +4,10 @@
 PYTHON ?= python
 SOURCE ?= ./sample_docs
 
-.PHONY: install db-up db-down migrate ingest reindex query eval test lint typecheck fmt api frontend-install frontend
+TF_DIR ?= infra/terraform
+
+.PHONY: install db-up db-down migrate ingest reindex query eval test lint typecheck fmt api frontend-install frontend \
+        compose-up compose-down frontend-image tf-init tf-plan tf-apply
 
 install:           ## Install backend + ingestion (editable) with dev extras
 	$(PYTHON) -m pip install -e ".[dev,openai]"
@@ -51,3 +54,22 @@ typecheck:         ## Type-check with mypy
 
 fmt:               ## Auto-format with ruff
 	$(PYTHON) -m ruff check --fix . && $(PYTHON) -m ruff format .
+
+# ── Phase 4: containers + deploy ─────────────────────────────────────────────
+compose-up:        ## Run the whole stack in containers (db + migrate + API + UI)
+	docker compose --profile full up --build
+
+compose-down:      ## Stop the containerized stack
+	docker compose --profile full down
+
+frontend-image:    ## Build the frontend production image
+	docker build -t rag-frontend ./frontend
+
+tf-init:           ## terraform init (infra/terraform)
+	cd $(TF_DIR) && terraform init
+
+tf-plan:           ## terraform plan
+	cd $(TF_DIR) && terraform plan
+
+tf-apply:          ## terraform apply
+	cd $(TF_DIR) && terraform apply

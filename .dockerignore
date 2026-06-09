@@ -1,0 +1,19 @@
+# Build context for backend/Dockerfile (context is the repo root).
+.git
+.gitignore
+.venv
+**/__pycache__
+**/*.pyc
+.pytest_cache
+**/.pytest_cache
+.mypy_cache
+.ruff_cache
+frontend/node_modules
+frontend/.next
+node_modules
+.env
+.env.*
+*.md
+infra
+.claude
+claude_code_rag_prompt.md

@@ -6,22 +6,22 @@ embedded, and indexed in Postgres (pgvector); queries run hybrid retrieval
 (dense + lexical) with reranking, then a Claude model — chosen by a cost-aware
 routing layer — synthesizes an answer with inline citations.
 
-> **Build status:** Phase 1 (scaffold + local ingestion), the Phase 2 query
-> **engine** (hybrid retrieval → rerank → cost-routed Claude generation + eval
-> harness), the Phase 2b **HTTP API** (FastAPI `/query` SSE, `/feedback`,
-> `/health`), the Phase 3a **web UI** (Next.js + Tailwind + a polished adaptive
-> light/dark chat that streams cited answers), and the Phase 3b **Google
-> Workspace SSO gate** (OIDC login in Next.js; the backend independently verifies
-> the Google ID token on every call) are implemented and tested. Still to come:
-> IaC/deploy (Phase 4).
+> **Build status:** complete through Phase 4. Phase 1 (scaffold + local
+> ingestion), the Phase 2 query **engine** (hybrid retrieval → rerank →
+> cost-routed Claude generation + eval harness), the Phase 2b **HTTP API**
+> (FastAPI `/query` SSE, `/feedback`, `/health`), the Phase 3a **web UI**
+> (Next.js + Tailwind, streaming cited answers, adaptive light/dark), the Phase 3b
+> **Google Workspace SSO gate** (OIDC login in Next.js; the backend independently
+> verifies the Google ID token), and the Phase 4 **deployment** (frontend
+> container + AWS Terraform on ECS Fargate) are implemented and tested.
 
 ## Contents
 
 - [Architecture](#architecture) · [How it works](#how-it-works)
 - [Requirements](#requirements) · [Setup](#setup) · [Configuration](#configuration)
 - [Running the stack](#running-the-stack) · [API endpoints](#api-endpoints) · [Authentication](#authentication)
-- [Evaluation](#evaluation) · [Testing](#testing)
-- [Project layout](#project-layout) · [Cost & deployment](#cost--deployment)
+- [Evaluation](#evaluation) · [Testing](#testing) · [Deployment](#deployment)
+- [Project layout](#project-layout) · [Cost](#cost)
 
 ## Architecture
 
@@ -202,6 +202,26 @@ make typecheck   # mypy
 
 Frontend: `cd frontend && npm run typecheck && npm test && npm run build`.
 
+## Deployment
+
+**Whole stack in containers, locally:**
+
+```bash
+docker compose --profile full up --build   # db + migrate + backend API + web UI → :3000
+```
+
+**AWS (ECS Fargate).** `infra/terraform/` provisions a VPC, RDS Postgres
+(pgvector), an S3 docs bucket wired to SQS, ECR, Secrets Manager, and a Fargate
+cluster running three services — the **frontend** behind a public ALB, the
+**backend** reached privately over ECS Service Connect, and the long-polling
+**ingest worker** (S3 → SQS → re-index). One backend image serves the API, the
+worker, and migrations. See [infra/terraform/README.md](infra/terraform/README.md)
+for the full apply → build/push → migrate runbook.
+
+```bash
+make tf-init && make tf-plan      # then `make tf-apply`
+```
+
 ## Project layout
 
 | Path | What |
@@ -214,15 +234,15 @@ Frontend: `cd frontend && npm run typecheck && npm test && npm run build`.
 | `backend/app/db/` | pgvector pool + SQL migrations |
 | `ingestion/pipeline/` | Loaders, chunking, hashing, sources, indexer, CLI, SQS worker |
 | `eval/` | Evaluation harness (Phase 2) |
-| `frontend/` | Next.js + Tailwind chat UI — streaming, citations, theme, SSO (Phase 3) |
-| `infra/terraform/` | AWS IaC (Phase 4) |
+| `frontend/` | Next.js + Tailwind chat UI + `Dockerfile` — streaming, citations, theme, SSO (Phase 3) |
+| `infra/terraform/` | AWS IaC — ECS Fargate, RDS, S3→SQS, ECR, Secrets Manager (Phase 4) |
 
-## Cost & deployment
+## Cost
 
 Claude generation dominates; the routing layer is the primary lever — easy,
 high-confidence queries go to Haiku ($1/$5 per 1M), typical to Sonnet
 ($3/$15), and only low-confidence/long-context/complex queries to Opus
 ($5/$25). Prompt-caching the system + retrieved-context prefix further cuts
-repeated-context cost. Voyage embeddings/rerank are cheap; RDS + App Runner are
-low-tens of dollars/month at modest traffic. The IaC/deploy story lands in
-Phase 4.
+repeated-context cost. Voyage embeddings/rerank are cheap; the AWS footprint
+(RDS `t4g.micro`, small Fargate tasks, one NAT gateway) is low-tens of dollars a
+month at modest traffic — the NAT gateway and RDS are the floor.

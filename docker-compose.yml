@@ -1,5 +1,6 @@
-# Local development stack. Brings up Postgres+pgvector and the backend API.
-# `docker compose up db` is enough for Phase 1 ingestion against a local DB.
+# Local development stack.
+#   docker compose up db                  -> just Postgres+pgvector (Phase 1 ingest)
+#   docker compose --profile full up      -> db + migrate + backend API + web UI
 services:
   db:
     image: pgvector/pgvector:pg16
@@ -16,6 +17,20 @@ services:
       interval: 5s
       timeout: 5s
       retries: 10
+
+  # One-off: apply the schema (+ CREATE EXTENSION vector), then exit. The backend
+  # waits for it to finish so it never starts against an unmigrated DB.
+  migrate:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    command: ["python", "-m", "app.db.migrate"]
+    environment:
+      DATABASE_URL: postgresql://rag:rag@db:5432/rag
+    depends_on:
+      db:
+        condition: service_healthy
+    profiles: ["full"]
 
   backend:
     build:
@@ -34,6 +49,22 @@ services:
     depends_on:
       db:
         condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    profiles: ["full"]
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    environment:
+      # Reach the backend over the compose network; auth off for local use.
+      BACKEND_URL: http://backend:8000
+      AUTH_ENABLED: "false"
+    ports:
+      - "3000:3000"
+    depends_on:
+      - backend
     profiles: ["full"]
 
 volumes:

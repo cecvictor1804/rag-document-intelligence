@@ -1,0 +1,34 @@
+# Copy to terraform.tfvars and fill in. NEVER commit a filled tfvars — the
+# secret values land in Terraform state (use the encrypted S3 backend in
+# versions.tf for anything real). Prefer exporting TF_VAR_<name> for secrets.
+
+project = "rag"
+env     = "prod"
+region  = "us-east-1"
+
+# Bumped each deploy to the tag you push to ECR.
+image_tag = "latest"
+
+# Sizing (defaults are the cheapest that work).
+db_instance_class = "db.t4g.micro"
+task_cpu          = 256
+task_memory       = 512
+desired_count     = 1
+
+# ── Auth ──────────────────────────────────────────────────────────────────────
+# Leave false for an open deployment; set true to enforce Google SSO. When true,
+# also fill google_oauth_client_id / google_hosted_domain / the *_secret vars,
+# and add <app_url>/api/auth/callback as an authorized redirect URI in Google.
+auth_enabled           = false
+google_oauth_client_id = ""
+google_hosted_domain   = "yourcompany.com"
+
+# Optional HTTPS: set an ACM cert ARN (in this region) to add a 443 listener.
+acm_certificate_arn = ""
+
+# ── Secrets (export as TF_VAR_* instead of writing them here) ─────────────────
+# db_password          = "..."
+# anthropic_api_key    = "..."
+# voyage_api_key       = "..."
+# auth_secret          = "..."   # openssl rand -base64 32 (only needed if auth_enabled)
+# google_client_secret = "..."   # (only needed if auth_enabled)

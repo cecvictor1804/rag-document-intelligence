@@ -10,6 +10,9 @@ const root = path.dirname(fileURLToPath(import.meta.url));
 const nextConfig: NextConfig = {
   turbopack: { root },
   outputFileTracingRoot: root,
+  // Emit a self-contained server (.next/standalone/server.js) so the Docker
+  // image ships only the files it needs — see frontend/Dockerfile.
+  output: "standalone",
 };
 
 export default nextConfig;
