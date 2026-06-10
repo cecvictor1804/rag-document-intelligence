@@ -1,9 +1,11 @@
 """Answer orchestration.
 
-retrieve -> if the best reranked chunk is below `min_rerank_score`, short-circuit
-to an honest "I don't know" WITHOUT calling Claude (saves cost and prevents
-hallucination on out-of-corpus questions) -> otherwise route to a model and
-stream the grounded, cited answer. Emits, in order: META, TOKEN*, CITATIONS, DONE.
+Two pre-generation gates short-circuit WITHOUT calling Claude: an investment-
+advice request is refused outright (hard guardrail), and a best-reranked-chunk
+score below `min_rerank_score` returns an honest "I don't know" (saves cost and
+prevents hallucination on out-of-corpus questions). Otherwise route to a model
+and stream the grounded, cited answer. Emits, in order: META, TOKEN*,
+CITATIONS, DONE.
 """
 
 from __future__ import annotations
@@ -15,6 +17,7 @@ from collections.abc import AsyncIterator, Sequence
 from app.config import Settings
 from app.core.interfaces import LLMClient
 from app.core.models import AnswerEvent, AnswerEventType, Turn
+from app.finance.guardrails import ADVICE_REFUSAL, is_advice_request
 from app.generation.query_log import QueryLog
 from app.llm.client import _NO_ANSWER
 from app.llm.router import route
@@ -43,6 +46,20 @@ class AnswerService:
         acl_filter: Sequence[str] | None = None,
     ) -> AsyncIterator[AnswerEvent]:
         started = time.perf_counter()
+
+        # Hard guardrail: investment-advice requests are refused before any
+        # retrieval or model call.
+        if is_advice_request(query):
+            yield AnswerEvent(
+                AnswerEventType.META,
+                {"model": None, "reason": "advice guardrail", "top_score": 0.0,
+                 "n_results": 0},
+            )
+            yield AnswerEvent(AnswerEventType.TOKEN, ADVICE_REFUSAL)
+            yield AnswerEvent(AnswerEventType.DONE, {"model": None, "usage": {}})
+            await self._log(query, None, "advice guardrail", 0.0, 0, started)
+            return
+
         context = await self.retrieval.retrieve(query, acl_filter)
         top = context[0].rerank_score if context else 0.0
 

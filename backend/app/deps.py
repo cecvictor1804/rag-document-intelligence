@@ -10,9 +10,17 @@ from __future__ import annotations
 from functools import lru_cache
 
 from app.config import Settings, get_settings
-from app.core.interfaces import EmbeddingProvider, LLMClient, Reranker, VectorStore
+from app.core.interfaces import (
+    EmbeddingProvider,
+    LLMClient,
+    MetricStore,
+    Reranker,
+    VectorStore,
+)
 from app.embeddings import build_embedding_provider
 from app.feedback import Feedback, PgFeedback
+from app.finance.service import MetricService
+from app.finance.store import PgMetricStore
 from app.generation.query_log import PgQueryLog, QueryLog
 from app.generation.service import AnswerService
 from app.llm import build_llm_client
@@ -54,6 +62,16 @@ def query_log() -> QueryLog:
 @lru_cache
 def feedback() -> Feedback:
     return PgFeedback()
+
+
+@lru_cache
+def metric_store() -> MetricStore:
+    return PgMetricStore()
+
+
+@lru_cache
+def metric_service() -> MetricService:
+    return MetricService(metric_store())
 
 
 @lru_cache

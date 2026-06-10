@@ -11,6 +11,13 @@ from __future__ import annotations
 from collections.abc import AsyncIterator, Sequence
 from typing import Protocol, runtime_checkable
 
+from app.core.finance import (
+    Basis,
+    FinancialDocMeta,
+    FinancialFact,
+    FiscalPeriod,
+    ParsedFinancialDoc,
+)
 from app.core.models import (
     AnswerEvent,
     Chunk,
@@ -89,6 +96,51 @@ class VectorStore(Protocol):
 
     async def delete_documents(self, doc_ids: Sequence[str]) -> int:
         """Remove documents (and their chunks, via cascade) no longer in source."""
+        ...
+
+
+@runtime_checkable
+class FinancialParser(Protocol):
+    """Turns a raw document (incl. scanned PDFs) into narrative text + structured
+    tables with cell positions. The commercial extraction vendor lives behind
+    this seam so it can be swapped (or faked in tests) without touching the
+    fact mapper or anything downstream."""
+
+    name: str
+
+    async def parse(self, ref: DocRef, content: bytes) -> ParsedFinancialDoc: ...
+
+
+@runtime_checkable
+class MetricStore(Protocol):
+    """Reads/writes for the canonical financial fact store. The Postgres
+    implementation resolves conflicts via the authoritative-facts view
+    (authority rank, then filing recency)."""
+
+    async def upsert_document(self, meta: FinancialDocMeta) -> None: ...
+
+    async def upsert_facts(self, facts: Sequence[FinancialFact]) -> int: ...
+
+    async def get_fact(
+        self,
+        entity_id: str,
+        line_item: str,
+        period: FiscalPeriod,
+        basis: Basis = Basis.GAAP,
+        segment: str | None = None,
+    ) -> FinancialFact | None:
+        """The authoritative value of one canonical line item for one period."""
+        ...
+
+    async def get_series(
+        self,
+        entity_id: str,
+        line_item: str,
+        basis: Basis = Basis.GAAP,
+        segment: str | None = None,
+        limit: int = 12,
+    ) -> list[FinancialFact]:
+        """Authoritative period-aligned series, most recent first."""
         ...
 
 
