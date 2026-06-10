@@ -30,6 +30,9 @@ reindex:           ## Alias for ingest (idempotent)
 ingest-financial:  ## Extract facts: make ingest-financial ENTITY=ACME FILES="sample_docs/acme_corp_10q_q3_2024.html"
 	$(PYTHON) -m ingestion.pipeline.run_financial --entity "$(ENTITY)" $(FILES)
 
+edgar-sync:        ## Pull recent SEC filings: make edgar-sync ENTITY=AAPL CIK=320193
+	$(PYTHON) -m ingestion.pipeline.edgar_sync --entity "$(ENTITY)" --cik "$(CIK)"
+
 query:             ## Run a one-shot query: make query Q="how do I reset my password?"
 	curl -N -s -X POST localhost:8000/query -H 'content-type: application/json' \
 		-d '{"query": "$(Q)"}'

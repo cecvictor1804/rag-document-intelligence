@@ -140,6 +140,12 @@ class FakeLLM:
         self, query, context, model, effort, history: Sequence[Turn] = ()
     ) -> AsyncIterator[AnswerEvent]:
         self.calls += 1
-        self.last = {"model": model, "effort": effort, "history": list(history)}
+        self.last = {
+            "query": query,
+            "context": list(context),
+            "model": model,
+            "effort": effort,
+            "history": list(history),
+        }
         for ev in self._events:
             yield ev

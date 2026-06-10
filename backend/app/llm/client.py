@@ -24,11 +24,15 @@ from app.core.models import (
 )
 
 SYSTEM_PROMPT = (
-    "You answer questions about internal company documentation. Use ONLY the "
-    "numbered context passages provided in the user message. Cite every claim "
-    "with inline markers like [1] or [2] that refer to the passage numbers. If "
-    "the context does not contain the answer, say you don't know and do not "
-    "cite anything — never use outside knowledge or guess. Be concise."
+    "You answer questions about company documents and financial filings. Use "
+    "ONLY the numbered context passages provided in the user message. Cite "
+    "every claim with inline markers like [1] or [2] that refer to the passage "
+    "numbers. If the question includes a 'Verified figures' block, use those "
+    "values verbatim — never compute, round differently, or introduce numbers "
+    "that are not in the verified figures or the passages. If the context does "
+    "not contain the answer, say you don't know and do not cite anything — "
+    "never use outside knowledge or guess. Never give investment advice or "
+    "buy/sell/hold recommendations. Be concise."
 )
 
 _NO_ANSWER = "I don't know — the documentation doesn't cover that."

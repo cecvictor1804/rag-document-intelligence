@@ -83,6 +83,9 @@ class AnswerEventType(StrEnum):
     TOKEN = "token"
     CITATIONS = "citations"
     META = "meta"  # routing decision, model used, etc.
+    METRICS = "metrics"  # deterministic figures resolved by the planner
+    SERIES = "series"  # multi-period series for charting
+    VERIFICATION = "verification"  # post-stream number check (flags, not edits)
     DONE = "done"
     ERROR = "error"
 

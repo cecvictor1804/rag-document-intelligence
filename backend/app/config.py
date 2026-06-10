@@ -85,6 +85,12 @@ class Settings(BaseSettings):
     # "html" = built-in parser for native-HTML filings (EDGAR).
     # "textract" = AWS Textract for PDFs/scans (per-page cost, IAM-authed).
     financial_parser: Literal["html", "textract"] = "html"
+    # NL→query planner: lets the chat answer with verified figures from the
+    # metric store. Off => pure narrative RAG (5a behavior).
+    planner_enabled: bool = True
+    # SEC EDGAR requires a descriptive User-Agent with contact info, e.g.
+    # "Acme Internal RAG admin@acme.com". Empty disables the EDGAR feed.
+    edgar_user_agent: str = ""
 
     # ── Ingestion worker ─────────────────────────────────────────────────
     ingest_sqs_queue_url: str = ""

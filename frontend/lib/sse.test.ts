@@ -31,6 +31,24 @@ describe("parseFrame", () => {
   it("returns null when there is no data line", () => {
     expect(parseFrame("event: ping")).toBeNull();
   });
+
+  it("parses the financial answer frames (metrics, series, verification)", () => {
+    const metrics = parseFrame(
+      'event: metrics\ndata: [{"metric":"gross_margin","value":"46.222","unit":"percent"}]',
+    );
+    expect(metrics?.type).toBe("metrics");
+    expect((metrics?.data as { metric: string }[])[0].metric).toBe("gross_margin");
+
+    const series = parseFrame(
+      'event: series\ndata: {"metric":"revenue","points":[{"period":"Q3 FY2024","value":94930000000}]}',
+    );
+    expect(series?.type).toBe("series");
+
+    expect(parseFrame('event: verification\ndata: {"unverified":["12.5%"]}')).toEqual({
+      type: "verification",
+      data: { unverified: ["12.5%"] },
+    });
+  });
 });
 
 describe("parseSSEStream", () => {

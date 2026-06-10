@@ -7,17 +7,19 @@ are extracted into a canonical metric store with **cell-level provenance**, metr
 (YoY growth, margins, ratios) are **computed deterministically** rather than guessed
 by an LLM, and every number in an answer cites the exact source cell it came from.
 
-> **Build status (honest).** The **platform** (Phases 1–4: ingestion → hybrid
-> retrieval → cost-routed Claude → FastAPI SSE API → Next.js UI → Google SSO →
-> AWS ECS Fargate deploy) and the **Phase 5a financial core** are built and
-> tested: structured table extraction (built-in HTML parser for EDGAR-style
-> filings + an AWS Textract adapter for PDFs/scans), the canonical metric store
-> with cell-level provenance and restatement precedence, deterministic metric
-> computation, citation-faithfulness verification, hard advice guardrails, the
-> `POST /metrics` endpoint + a metrics panel in the UI, and an offline financial
-> eval. Still to come — marked **(planned)** below: the NL→query planner and
-> unified numeric+narrative answers (5b), charts, the EDGAR watchlist feed,
-> multi-page async Textract, and FX. See the [Roadmap](#roadmap).
+> **Build status (honest).** Built and tested through **Phase 5b**: the platform
+> (Phases 1–4: ingestion → hybrid retrieval → cost-routed Claude → FastAPI SSE
+> API → Next.js UI → Google SSO → AWS ECS Fargate deploy), the **5a financial
+> core** (structured table extraction — built-in HTML parser + AWS Textract
+> adapter — canonical metric store with cell-level provenance and restatement
+> precedence, deterministic metric computation, citation-faithfulness
+> verification, hard advice guardrails, `POST /metrics` + a metrics panel, and
+> an offline financial eval), and **5b unified querying** (an NL→query planner
+> that merges verified figures into chat answers with metric cards + trend
+> charts and post-stream number verification, plus the EDGAR watchlist feed).
+> Still to come — marked **(planned)** below: FX, broader entity coverage,
+> fiscal calendars (5c); async multi-page Textract and scale/ops (5d). See the
+> [Roadmap](#roadmap).
 
 ## Contents
 
@@ -61,9 +63,11 @@ reasons, and the design exists to address each:
                                                   │   cell provenance) → reconciliation        │
   documents ─► ingest CLI/worker ─► both          │ → canonical metric store (restatement      │
   S3 upload · manual files ·                      │   lineage, source precedence)              │
-  EDGAR watchlist feed (planned)                  │ → deterministic compute (ratios/growth)    │
+  EDGAR watchlist feed (make edgar-sync)          │ → deterministic compute (ratios/growth)    │
                                                   │ → cite-cell + verify → advice guardrails   │
                                                   └────────────────────────────────────────────┘
+  chat question ─► NL→query planner (cheap Claude call) ─► verified figures merged into the
+  streamed answer (metric cards + trend charts); every number checked post-stream
 ```
 
 Every external boundary (embeddings, rerank, LLM, vector DB, and the **financial
@@ -101,13 +105,21 @@ cost-aware router picks a Claude model (Haiku/Sonnet/Opus) that streams a ground
 answer with inline `[n]` citations. Below `MIN_RERANK_SCORE`, it returns "I don't
 know" **without** calling Claude. Wiring lives in `backend/app/deps.py`.
 
-**Query — numeric (built; NL planner planned).** `POST /metrics` (and the UI's
-metrics panel) resolves a figure or ratio **deterministically — no LLM in the
-path**: the compute layer runs the math and returns the exact source facts with
-their cells. A **citation-faithfulness verifier** can hold any narration to those
-verified values, and **hard advice guardrails** refuse buy/sell/hold questions
-before retrieval or generation. The NL→structured-query planner that merges
-numeric and narrative answers into one conversational surface is **planned (5b)**.
+**Query — numeric (built).** `POST /metrics` (and the UI's metrics panel)
+resolves a figure or ratio **deterministically — no LLM in the path**: the
+compute layer runs the math and returns the exact source facts with their cells.
+**Hard advice guardrails** refuse buy/sell/hold questions before retrieval or
+generation.
+
+**Query — unified (built, 5b).** In chat, an **NL→query planner** (one cheap
+Claude call, restricted to the legal metric vocabulary; any failure degrades to
+narrative-only) decides which verified figures the question needs. They're
+resolved deterministically, streamed as **metric cards** and **trend charts**,
+and appended to the model's input as a "verified figures" block so the narration
+uses exact values. After streaming, a **citation-faithfulness check** compares
+every number in the answer against the verified figures + numbers present in the
+retrieved passages; anything unbacked is flagged in the UI ("n numbers could not
+be verified").
 
 **Frontend / auth (built).** The browser talks **only** to Next.js, which proxies to
 the FastAPI backend (no CORS) and acts as the OAuth client when auth is on — see
@@ -157,6 +169,8 @@ make migrate                        # apply schema (idempotent)
 make ingest SOURCE=./sample_docs    # narrative index (chunks + embeddings)
 # numeric facts: extract a filing into the metric store
 make ingest-financial ENTITY=ACME FILES="sample_docs/acme_corp_10q_q3_2024.html"
+# or pull real filings from SEC EDGAR (needs EDGAR_USER_AGENT in .env):
+make edgar-sync ENTITY=AAPL CIK=320193
 ```
 
 No DB handy? `python scripts/smoke_phase1.py` imports every module and runs the
@@ -300,12 +314,13 @@ sequenced so each slice is shippable:
   precedence, reconciliation invariants, the deterministic compute layer, the
   citation-faithfulness verifier, advice guardrails, `POST /metrics` + the
   metrics panel, and the offline financial eval.
-- **5b — Unified querying.** NL→structured-query planner that merges numeric and
-  narrative answers in one surface; multi-period **charts** and trend/compare UI;
-  the EDGAR **watchlist feed** (auto-pull filings by CIK).
+- **5b — Unified querying** ✅ shipped: the NL→query planner merges verified
+  figures into chat answers (metric cards + trend charts + post-stream number
+  verification), and `make edgar-sync` pulls a watchlist entity's recent
+  10-K/10-Q filings straight from SEC EDGAR into the metric store.
 - **5c — Breadth & depth.** FX conversion with as-of rates; broader entity universe +
   dedup; segment/footnote-aware querying; non-GAAP reconciliation views; entity
-  fiscal calendars (today periods are calendar-aligned).
+  fiscal calendars (today periods are calendar-aligned); ratio series for charts.
 - **5d — Scale & ops.** Multi-page async Textract (S3-based), parallel extraction
   for true near-real-time ingest, cost controls, and a human-in-the-loop review
   queue for low-confidence figures.

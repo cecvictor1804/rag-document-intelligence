@@ -3,7 +3,13 @@
 import { useCallback, useRef, useState } from "react";
 
 import { parseSSEStream } from "./sse";
-import type { ChatMessage, Citation, MetaData } from "./types";
+import type {
+  ChatMessage,
+  Citation,
+  MetaData,
+  MetricEventData,
+  SeriesEventData,
+} from "./types";
 
 let counter = 0;
 const nextId = () => `m${++counter}`;
@@ -65,6 +71,14 @@ export function useChat() {
             patch(asstId, (m) => ({ ...m, citations: ev.data as Citation[] }));
           } else if (ev.type === "meta") {
             patch(asstId, (m) => ({ ...m, meta: ev.data as MetaData }));
+          } else if (ev.type === "metrics") {
+            patch(asstId, (m) => ({ ...m, metrics: ev.data as MetricEventData[] }));
+          } else if (ev.type === "series") {
+            const s = ev.data as SeriesEventData;
+            patch(asstId, (m) => ({ ...m, series: [...(m.series ?? []), s] }));
+          } else if (ev.type === "verification") {
+            const v = ev.data as { unverified: string[] };
+            patch(asstId, (m) => ({ ...m, unverified: v.unverified }));
           } else if (ev.type === "done") {
             patch(asstId, (m) => ({ ...m, pending: false }));
           }

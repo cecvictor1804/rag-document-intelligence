@@ -19,9 +19,45 @@ from app.finance.metrics import (
 )
 
 
+def underlying_line_item(metric: str) -> str | None:
+    """The canonical line item a metric name is anchored to: ratios anchor to
+    their numerator, `<item>_yoy` to the item, chart items to themselves."""
+    if metric in RATIO_METRICS:
+        return RATIO_METRICS[metric][0]
+    if metric.endswith("_yoy"):
+        base = metric[: -len("_yoy")]
+        return base if chart_item(base) else None
+    return metric if chart_item(metric) else None
+
+
 class MetricService:
     def __init__(self, store: MetricStore) -> None:
         self.store = store
+
+    async def latest_period(
+        self, entity_id: str, metric: str, basis: Basis = Basis.GAAP
+    ) -> FiscalPeriod | None:
+        """The most recent period for which the metric's anchor item has a
+        fact — resolves 'latest' when a question names no period."""
+        item = underlying_line_item(metric)
+        if item is None:
+            return None
+        latest = await self.store.get_series(entity_id, item, basis, limit=1)
+        return latest[0].period if latest else None
+
+    async def series(
+        self,
+        entity_id: str,
+        line_item: str,
+        basis: Basis = Basis.GAAP,
+        limit: int = 8,
+    ) -> list[FinancialFact]:
+        """Authoritative period series of a canonical line item, oldest first
+        (chart order). Ratio series are a 5c follow-up."""
+        if chart_item(line_item) is None:
+            raise MetricError(f"unknown line item: {line_item}")
+        facts = await self.store.get_series(entity_id, line_item, basis, limit=limit)
+        return list(reversed(facts))
 
     async def lookup(
         self,

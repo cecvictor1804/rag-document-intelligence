@@ -39,6 +39,7 @@ Thumbs.db
 
 # Local data
 sample_docs/.cache/
+data/
 *.log
 
 # Internal design/prompt doc — kept local, not published

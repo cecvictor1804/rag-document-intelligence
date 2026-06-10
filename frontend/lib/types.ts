@@ -18,10 +18,32 @@ export type MetaData = {
   n_results?: number;
 };
 
+// One planner-resolved figure embedded in a chat answer (backend
+// generation/service.py _metric_payload — FactProvenance-shaped inputs).
+export type MetricEventData = {
+  metric: string;
+  value: string;
+  unit: string;
+  currency: string | null;
+  period: string;
+  formula: string;
+  inputs: FactProvenance[];
+};
+
+export type SeriesEventData = {
+  metric: string;
+  unit: string;
+  currency: string | null;
+  points: { period: string; value: number }[];
+};
+
 export type SSEEvent =
   | { type: "meta"; data: MetaData }
   | { type: "token"; data: string }
   | { type: "citations"; data: Citation[] }
+  | { type: "metrics"; data: MetricEventData[] }
+  | { type: "series"; data: SeriesEventData }
+  | { type: "verification"; data: { unverified: string[] } }
   | { type: "done"; data: { model: string | null; usage: Record<string, number> } }
   | { type: "error"; data: unknown };
 
@@ -64,6 +86,9 @@ export type ChatMessage = {
   content: string;
   citations?: Citation[];
   meta?: MetaData;
+  metrics?: MetricEventData[];
+  series?: SeriesEventData[];
+  unverified?: string[];
   pending?: boolean;
   error?: boolean;
 };

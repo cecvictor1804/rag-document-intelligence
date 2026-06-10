@@ -6,7 +6,9 @@ import { Sparkles, ThumbsDown, ThumbsUp, User } from "lucide-react";
 import { toast } from "sonner";
 
 import { CitationChip, Sources } from "@/components/citation";
+import { MetricCards } from "@/components/metric-cards";
 import { ModelBadge } from "@/components/model-badge";
+import { TrendChart } from "@/components/trend-chart";
 import { sendFeedback } from "@/lib/api";
 import type { ChatMessage } from "@/lib/types";
 import { cn } from "@/lib/utils";
@@ -86,6 +88,11 @@ export function Message({ message }: { message: ChatMessage }) {
       </div>
 
       <div className={cn("min-w-0 max-w-[min(46rem,85%)]", isUser && "text-right")}>
+        {!isUser && message.metrics && message.metrics.length > 0 && (
+          <MetricCards metrics={message.metrics} />
+        )}
+        {!isUser &&
+          message.series?.map((s, i) => <TrendChart key={`${s.metric}-${i}`} series={s} />)}
         <div
           className={cn(
             "inline-block rounded-2xl px-4 py-2.5 text-left text-sm leading-relaxed",
@@ -111,6 +118,16 @@ export function Message({ message }: { message: ChatMessage }) {
 
         {!isUser && !message.pending && (
           <>
+            {message.unverified && message.unverified.length > 0 && (
+              <p
+                title={message.unverified.join(", ")}
+                className="mt-2 inline-flex items-center gap-1 rounded-md border border-amber-500/40 bg-amber-500/10 px-2 py-1 text-xs text-amber-600 dark:text-amber-400"
+              >
+                ⚠ {message.unverified.length} number
+                {message.unverified.length === 1 ? "" : "s"} could not be verified
+                against sources
+              </p>
+            )}
             {message.citations && <Sources citations={message.citations} />}
             <div className="mt-2 flex items-center gap-2">
               <ModelBadge model={message.meta?.model} />

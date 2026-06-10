@@ -9,7 +9,7 @@ store can be swapped without touching retrieval or generation.
 from __future__ import annotations
 
 from collections.abc import AsyncIterator, Sequence
-from typing import Protocol, runtime_checkable
+from typing import Any, Protocol, runtime_checkable
 
 from app.core.finance import (
     Basis,
@@ -146,6 +146,15 @@ class MetricStore(Protocol):
         limit: int = 12,
     ) -> list[FinancialFact]:
         """Authoritative period-aligned series, most recent first."""
+        ...
+
+
+@runtime_checkable
+class QueryPlanner(Protocol):
+    """Maps a chat question to the verified figures it needs (or None for a
+    pure-narrative answer). Implemented by finance.planner.LLMQueryPlanner."""
+
+    async def plan(self, query: str) -> Any:  # finance.planner.QueryPlan | None
         ...
 
 

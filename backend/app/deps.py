@@ -14,11 +14,13 @@ from app.core.interfaces import (
     EmbeddingProvider,
     LLMClient,
     MetricStore,
+    QueryPlanner,
     Reranker,
     VectorStore,
 )
 from app.embeddings import build_embedding_provider
 from app.feedback import Feedback, PgFeedback
+from app.finance.planner import LLMQueryPlanner
 from app.finance.service import MetricService
 from app.finance.store import PgMetricStore
 from app.generation.query_log import PgQueryLog, QueryLog
@@ -75,10 +77,25 @@ def metric_service() -> MetricService:
 
 
 @lru_cache
+def planner() -> QueryPlanner | None:
+    s = settings()
+    if not s.planner_enabled:
+        return None
+    return LLMQueryPlanner(model=s.router_model_cheap, api_key=s.anthropic_api_key)
+
+
+@lru_cache
 def retrieval_service() -> RetrievalService:
     return RetrievalService(embedder(), vector_store(), reranker(), settings())
 
 
 @lru_cache
 def answer_service() -> AnswerService:
-    return AnswerService(retrieval_service(), llm_client(), settings(), query_log())
+    return AnswerService(
+        retrieval_service(),
+        llm_client(),
+        settings(),
+        query_log(),
+        planner=planner(),
+        metrics=metric_service(),
+    )
