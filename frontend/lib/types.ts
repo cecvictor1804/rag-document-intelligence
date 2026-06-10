@@ -25,6 +25,37 @@ export type SSEEvent =
   | { type: "done"; data: { model: string | null; usage: Record<string, number> } }
   | { type: "error"; data: unknown };
 
+// Mirrors backend/app/api/schemas.py MetricResponse / FactProvenance.
+// Decimal values arrive as strings to preserve exactness.
+export type FactProvenance = {
+  line_item: string | null;
+  line_item_as_reported: string;
+  value: string;
+  value_as_reported: string;
+  scale: number;
+  currency: string;
+  unit: string;
+  basis: string;
+  segment: string | null;
+  period: string;
+  doc_id: string;
+  page: number | null;
+  table_index: number | null;
+  row: number | null;
+  col: number | null;
+};
+
+export type MetricResponse = {
+  metric: string;
+  value: string;
+  unit: string;
+  currency: string | null;
+  period: string;
+  formula: string;
+  inputs: FactProvenance[];
+  disclaimer: string;
+};
+
 export type Role = "user" | "assistant";
 
 export type ChatMessage = {

@@ -11,9 +11,12 @@ from __future__ import annotations
 from app.config import Settings
 from app.core.interfaces import FinancialParser
 from app.extraction.html_table import HtmlTableParser
+from app.extraction.textract import TextractParser
 
 
 def build_financial_parser(settings: Settings) -> FinancialParser:
     if settings.financial_parser == "html":
         return HtmlTableParser()
+    if settings.financial_parser == "textract":
+        return TextractParser(region=settings.aws_region)
     raise ValueError(f"unknown financial parser: {settings.financial_parser}")

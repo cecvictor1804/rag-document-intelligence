@@ -46,6 +46,9 @@ frontend:          ## Run the Next.js frontend dev server on :3000
 eval:              ## Run the evaluation harness
 	$(PYTHON) -m eval.run_eval
 
+eval-financial:    ## Financial eval: ground-truth figures + reconciliation + faithfulness (offline)
+	$(PYTHON) -m eval.financial
+
 test:              ## Run unit tests
 	$(PYTHON) -m pytest -q
 

@@ -1,6 +1,7 @@
 import { FileText } from "lucide-react";
 
 import { Chat } from "@/components/chat";
+import { MetricsPanel } from "@/components/metrics-panel";
 import { ThemeToggle } from "@/components/theme-toggle";
 import { UserMenu } from "@/components/user-menu";
 
@@ -29,6 +30,7 @@ export default function Home() {
             <span className="font-semibold tracking-tight">Internal Docs AI</span>
           </div>
           <div className="flex items-center gap-1">
+            <MetricsPanel />
             <ThemeToggle />
             <UserMenu />
           </div>

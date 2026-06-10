@@ -82,9 +82,9 @@ class Settings(BaseSettings):
         return self.oidc_audience or self.google_oauth_client_id
 
     # ── Financial extraction (Phase 5) ───────────────────────────────────
-    # "html" is the built-in parser for native-HTML filings (EDGAR). A
-    # commercial parser adapter (scanned PDFs, complex tables) plugs in here.
-    financial_parser: Literal["html"] = "html"
+    # "html" = built-in parser for native-HTML filings (EDGAR).
+    # "textract" = AWS Textract for PDFs/scans (per-page cost, IAM-authed).
+    financial_parser: Literal["html", "textract"] = "html"
 
     # ── Ingestion worker ─────────────────────────────────────────────────
     ingest_sqs_queue_url: str = ""

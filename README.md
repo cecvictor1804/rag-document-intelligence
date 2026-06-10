@@ -7,14 +7,17 @@ are extracted into a canonical metric store with **cell-level provenance**, metr
 (YoY growth, margins, ratios) are **computed deterministically** rather than guessed
 by an LLM, and every number in an answer cites the exact source cell it came from.
 
-> **Build status (honest).** The underlying **platform** is built and tested —
-> ingestion → hybrid retrieval → cost-routed Claude generation → FastAPI SSE API →
-> Next.js UI → Google SSO → AWS ECS Fargate deploy (Phases 1–4). The **financial
-> intelligence layer** — structured table/number extraction, the canonical metric
-> store, the deterministic compute layer, cell-cited verification, and advice
-> guardrails — is the **current focus (Phase 5)** and is **not yet built**.
-> Throughout this README, capabilities that don't run today are marked **(planned)**.
-> See the [Roadmap](#roadmap).
+> **Build status (honest).** The **platform** (Phases 1–4: ingestion → hybrid
+> retrieval → cost-routed Claude → FastAPI SSE API → Next.js UI → Google SSO →
+> AWS ECS Fargate deploy) and the **Phase 5a financial core** are built and
+> tested: structured table extraction (built-in HTML parser for EDGAR-style
+> filings + an AWS Textract adapter for PDFs/scans), the canonical metric store
+> with cell-level provenance and restatement precedence, deterministic metric
+> computation, citation-faithfulness verification, hard advice guardrails, the
+> `POST /metrics` endpoint + a metrics panel in the UI, and an offline financial
+> eval. Still to come — marked **(planned)** below: the NL→query planner and
+> unified numeric+narrative answers (5b), charts, the EDGAR watchlist feed,
+> multi-page async Textract, and FX. See the [Roadmap](#roadmap).
 
 ## Contents
 
@@ -44,28 +47,29 @@ reasons, and the design exists to address each:
 ## Architecture
 
 ```
-          Google Workspace SSO (OIDC, hd-gated) ── built
+          Google Workspace SSO (OIDC, hd-gated)
                         │
-  Next.js UI ───────────┼───► FastAPI ──┬─► /query    (narrative, SSE) ──────────── built
-  chat + metrics panel* │               ├─► /metrics  (figure + source cell)* ───── planned
-  drill-down to cell*   │               └─► /feedback · /health ──────────────────── built
+  Next.js UI ───────────┼───► FastAPI ──┬─► /query    (narrative, SSE)
+  chat + metrics panel  │               ├─► /metrics  (figure + source cell, no LLM)
+  with cell provenance  │               └─► /feedback · /health
                         ▼
-  ┌─ narrative substrate (built) ───────────┐   ┌─ numeric substrate (planned, Phase 5) ────┐
-  │ loaders → chunk → embed (Voyage) →       │   │ commercial parser → fact mapper           │
-  │ pgvector; hybrid retrieval → rerank →    │   │  (units/scale/currency norm, canonical +  │
-  │ cost-routed Claude with [n] citations    │   │   as-reported line items, fiscal periods, │
-  └──────────────────────────────────────────┘   │   GAAP/non-GAAP, segment, cell provenance)│
-                                                  │ → canonical metric store (restatement     │
-  documents ─► ingest worker ─► both substrates   │   lineage, source precedence)             │
-  S3 upload · EDGAR feed* · watchlist (CIK)*       │ → deterministic compute (ratios/growth)  │
-                                                  │ → cite-cell + verify → advice guardrails  │
-                        * = planned                └────────────────────────────────────────── ┘
+  ┌─ narrative substrate ───────────────────┐   ┌─ numeric substrate ────────────────────────┐
+  │ loaders → chunk → embed (Voyage) →       │   │ parser (HTML built-in | Textract for PDFs) │
+  │ pgvector; hybrid retrieval → rerank →    │   │ → fact mapper (units/scale/currency norm,  │
+  │ cost-routed Claude with [n] citations    │   │   canonical + as-reported line items,      │
+  └──────────────────────────────────────────┘   │   fiscal periods, GAAP/non-GAAP, segment,  │
+                                                  │   cell provenance) → reconciliation        │
+  documents ─► ingest CLI/worker ─► both          │ → canonical metric store (restatement      │
+  S3 upload · manual files ·                      │   lineage, source precedence)              │
+  EDGAR watchlist feed (planned)                  │ → deterministic compute (ratios/growth)    │
+                                                  │ → cite-cell + verify → advice guardrails   │
+                                                  └────────────────────────────────────────────┘
 ```
 
 Every external boundary (embeddings, rerank, LLM, vector DB, and the **financial
-parser** (planned)) is swappable behind a Protocol in
-`backend/app/core/interfaces.py` — so the commercial extraction vendor, like the
-vector DB, can be replaced without touching the rest of the system.
+parser**) is swappable behind a Protocol in `backend/app/core/interfaces.py` — the
+extraction vendor, like the vector DB, can be replaced without touching the rest
+of the system (`FINANCIAL_PARSER=html|textract`).
 
 ## How it works
 
@@ -76,16 +80,20 @@ hashes mean re-indexing only touches what changed and prunes deleted documents. 
 CLI prints a JSON summary: `docs_seen / changed / skipped / chunks_upserted /
 chunks_deleted / docs_deleted / failures`.
 
-**Ingestion — numeric (planned).** A commercial financial parser turns tables (incl.
-scanned/OCR) and any XBRL into structured cells; a **fact mapper** normalizes
-scale/currency/units (storing a canonical base value alongside the as-reported one),
-maps line items to a canonical chart while **keeping the company's own label**,
-resolves the fiscal period, tags GAAP vs non-GAAP and segment vs consolidated, and
-attaches **page/table/row/col provenance**. **Reconciliation invariants** (line items
-sum to stated totals; Assets = Liabilities + Equity) flag bad extractions instead of
-trusting them. Facts land in a **canonical metric store** with restatement lineage and
-a **source-precedence hierarchy** (audited filing > amendment > press release; latest
-restatement wins; alternates kept).
+**Ingestion — numeric (built).** A financial parser turns tables into structured
+cells — the built-in HTML parser for native-HTML filings (what EDGAR 10-K/10-Qs
+are), or **AWS Textract** for PDFs/scans (chosen because the deploy is already
+AWS: documents stay in-account, IAM instead of vendor API keys; multi-page async
+analysis is **planned**). A **fact mapper** normalizes scale/currency/units
+(storing a canonical base value alongside the as-reported one), maps line items
+to a canonical chart while **keeping the company's own label**, resolves the
+fiscal period, tags GAAP vs non-GAAP, and attaches **page/table/row/col
+provenance**. **Reconciliation invariants** (Assets = Liabilities + Equity;
+Revenue − CoR = Gross profit) flag bad extractions instead of trusting them.
+Facts land in the **canonical metric store** with restatement lineage and a
+**source-precedence hierarchy** (audited filing > amendment > press release;
+latest restatement wins; alternates kept). Ingest with
+`make ingest-financial ENTITY=ACME FILES="sample_docs/acme_corp_10q_q3_2024.html"`.
 
 **Query — narrative (built).** A question is embedded and searched both ways (dense
 HNSW + lexical tsvector), fused with Reciprocal Rank Fusion, reranked, then a
@@ -93,11 +101,13 @@ cost-aware router picks a Claude model (Haiku/Sonnet/Opus) that streams a ground
 answer with inline `[n]` citations. Below `MIN_RERANK_SCORE`, it returns "I don't
 know" **without** calling Claude. Wiring lives in `backend/app/deps.py`.
 
-**Query — numeric (planned).** A planner translates a question into a structured query
-over the metric store; the **deterministic compute layer** runs the math and returns
-the **exact source facts/cells**; Claude narrates **only verified values**, and a
-**citation-faithfulness verifier** rejects any number not backed by a returned fact.
-**Advice guardrails** refuse recommendations and attach disclaimers.
+**Query — numeric (built; NL planner planned).** `POST /metrics` (and the UI's
+metrics panel) resolves a figure or ratio **deterministically — no LLM in the
+path**: the compute layer runs the math and returns the exact source facts with
+their cells. A **citation-faithfulness verifier** can hold any narration to those
+verified values, and **hard advice guardrails** refuse buy/sell/hold questions
+before retrieval or generation. The NL→structured-query planner that merges
+numeric and narrative answers into one conversational surface is **planned (5b)**.
 
 **Frontend / auth (built).** The browser talks **only** to Next.js, which proxies to
 the FastAPI backend (no CORS) and acts as the OAuth client when auth is on — see
@@ -110,7 +120,8 @@ the FastAPI backend (no CORS) and acts as the OAuth client when auth is on — s
 - A `VOYAGE_API_KEY` (embeddings/rerank) and `ANTHROPIC_API_KEY` (generation).
   These incur cost; nothing calls them until you run ingestion/queries.
 - Node 20+ (only for the web UI).
-- **(planned)** a commercial financial-parser API key, once Phase 5 lands.
+- AWS credentials only if you set `FINANCIAL_PARSER=textract` (PDF/scan
+  extraction; per-page cost). HTML filings need nothing extra.
 
 ## Setup
 
@@ -132,22 +143,20 @@ cp .env.example .env        # fill in keys; never commit .env
 
 All knobs live in `backend/app/config.py` and are documented in `.env.example`:
 DB URL, document source (local folder vs S3), embedding/rerank provider, chunking,
-retrieval top-k's, the model-routing thresholds, and the Google SSO hosted-domain
-gate. No secrets are hardcoded; in AWS these come from Secrets Manager. (The financial
-parser, metric-store, and watchlist/EDGAR settings arrive with Phase 5 — **planned**.)
+retrieval top-k's, the model-routing thresholds, the financial parser
+(`FINANCIAL_PARSER=html|textract`), and the Google SSO hosted-domain gate. No
+secrets are hardcoded; in AWS these come from Secrets Manager.
 
 ## Running the stack
-
-This runs the **platform as it exists today**: ingest documents and ask narrative
-questions. (Numeric metric queries are **planned** — see [Roadmap](#roadmap).)
 
 ### 1. Ingest documents
 
 ```bash
 make db-up                          # start Postgres + pgvector
 make migrate                        # apply schema (idempotent)
-make ingest SOURCE=./sample_docs    # backfill the index
-make ingest SOURCE=./sample_docs    # re-run: everything reports "skipped"
+make ingest SOURCE=./sample_docs    # narrative index (chunks + embeddings)
+# numeric facts: extract a filing into the metric store
+make ingest-financial ENTITY=ACME FILES="sample_docs/acme_corp_10q_q3_2024.html"
 ```
 
 No DB handy? `python scripts/smoke_phase1.py` imports every module and runs the
@@ -172,8 +181,10 @@ By default the API is **open** (`AUTH_ENABLED=false`) — bind to localhost. Set
 
 A polished Next.js 16 + Tailwind v4 chat UI lives in `frontend/`. It streams the
 answer token-by-token with inline `[n]` citations, a Sources panel, a routed-model
-badge, thumbs up/down feedback, and an **adaptive light/dark theme**. (A metrics
-panel with charts and drill-down to the source cell is **planned**.)
+badge, thumbs up/down feedback, an **adaptive light/dark theme**, and a **metrics
+panel** (chart icon in the header) that looks up figures/ratios deterministically
+and shows the exact source cell of every input. (Charts/trend views are
+**planned**, 5b.)
 
 ```bash
 # With the API running (step 2):
@@ -191,8 +202,11 @@ make frontend                    # cd frontend && npm run dev  → http://localh
   `{"id": N}`; persists to the `feedback` table (attributed to the signed-in user when
   auth is on, else `anonymous@local`).
 - `GET /health` — `200 {"status":"ok"}` when the DB is reachable, else `503`.
-- **(planned)** `POST /metrics` — `{entity, period, line-item|ratio}` → a value with
-  its **exact source cell** (page/table/row/col) and as-reported + canonical forms.
+- `POST /metrics` — `{"entity","metric","fiscal_year","fiscal_quarter?","basis?"}` →
+  the value (Decimal-as-string for exactness) plus, per input figure, the **exact
+  source cell** (doc, page, table, row, col), the as-reported label/value/scale,
+  and a disclaimer. `metric` is a canonical line item (`revenue`), a ratio
+  (`gross_margin`), or a YoY growth (`revenue_yoy`). Deterministic — no LLM.
 
 ## Authentication
 
@@ -236,10 +250,15 @@ python -m eval.run_eval --no-judge   # retrieval metrics only — deterministic,
 `eval/cases.yaml` holds question → `expected_doc_ids` cases; `run_eval` reports per-case
 hit-rate@k, MRR, recall@k, and (unless `--no-judge`) an LLM-judge groundedness score.
 
-**Numeric eval (planned).** Retrieval + judge can't check arithmetic, so Phase 5 adds
-three deterministic layers: a **ground-truth figure set** (question → expected number +
-tolerance, CI-failing), **reconciliation invariants** (sums/accounting identities), and
-a **citation-faithfulness** check (every number in an answer maps to its cited cell).
+**Numeric eval (built).** Retrieval + judge can't check arithmetic, so the
+financial eval adds three deterministic layers — a **ground-truth figure set**
+(`eval/financial/cases.yaml`: metric → exact expected value), **reconciliation
+invariants**, and a **citation-faithfulness self-check** — run end-to-end through
+the real parser/mapper/compute with an in-memory store:
+
+```bash
+make eval-financial    # fully offline: no DB, no API keys; CI gate via pytest
+```
 
 ## Testing
 
@@ -272,45 +291,41 @@ make tf-init && make tf-plan      # then `make tf-apply`
 
 ## Roadmap
 
-The platform (Phases 1–4) is done. The financial pivot is **Phase 5**, sequenced so
-each slice is shippable:
+The platform (Phases 1–4) and **5a** are done. The rest of the financial pivot,
+sequenced so each slice is shippable:
 
-- **5a — Extraction + fact store + computed metrics** (the first slice). Commercial
-  parser behind a Protocol, the fact mapper, the canonical metric store with cell
-  provenance + restatement precedence, reconciliation invariants, the deterministic
-  compute layer, the cite-cell + verify guarantee, advice guardrails, a `POST /metrics`
-  endpoint + minimal metrics panel, and the finance eval (ground-truth + reconciliation
-  + faithfulness).
+- **5a — Extraction + fact store + computed metrics** ✅ shipped: parsers (HTML
+  built-in + Textract adapter) behind the `FinancialParser` Protocol, the fact
+  mapper, the canonical metric store with cell provenance + restatement
+  precedence, reconciliation invariants, the deterministic compute layer, the
+  citation-faithfulness verifier, advice guardrails, `POST /metrics` + the
+  metrics panel, and the offline financial eval.
 - **5b — Unified querying.** NL→structured-query planner that merges numeric and
-  narrative answers in one surface; multi-period **charts** and trend/compare UI.
+  narrative answers in one surface; multi-period **charts** and trend/compare UI;
+  the EDGAR **watchlist feed** (auto-pull filings by CIK).
 - **5c — Breadth & depth.** FX conversion with as-of rates; broader entity universe +
-  dedup; segment/footnote-aware querying; non-GAAP reconciliation views.
-- **5d — Scale & ops.** Parallel extraction for true near-real-time ingest, cost
-  controls, and a human-in-the-loop review queue for low-confidence figures.
-
-Open sub-decisions before 5a: which commercial parser, the canonical chart of
-accounts, and whether the watchlist feed is EDGAR-only or also manual upload.
+  dedup; segment/footnote-aware querying; non-GAAP reconciliation views; entity
+  fiscal calendars (today periods are calendar-aligned).
+- **5d — Scale & ops.** Multi-page async Textract (S3-based), parallel extraction
+  for true near-real-time ingest, cost controls, and a human-in-the-loop review
+  queue for low-confidence figures.
 
 ## Project layout
 
-Built today, plus the **(planned)** Phase 5 modules:
-
 | Path | What |
 |------|------|
-| `backend/app/core/` | Shared contract: DTOs + swappable Protocols |
+| `backend/app/core/` | Shared contract: DTOs (`finance.py` = financial domain) + swappable Protocols |
 | `backend/app/embeddings/`, `rerank/`, `vectorstore/`, `llm/` | Provider impls (narrative) |
+| `backend/app/extraction/` | Financial parsers: built-in HTML tables + AWS Textract adapter |
+| `backend/app/finance/` | Chart of accounts, deterministic metrics, verifier, guardrails, metric store |
 | `backend/app/retrieval/`, `generation/`, `deps.py` | Hybrid retrieval, answer orchestration + routing, wiring |
-| `backend/app/api/`, `main.py`, `feedback.py` | FastAPI routes (`/query` SSE, `/feedback`, `/health`) + app |
+| `backend/app/api/`, `main.py`, `feedback.py` | FastAPI routes (`/query` SSE, `/metrics`, `/feedback`, `/health`) + app |
 | `backend/app/auth.py` | Google ID-token verification + the `require_user` gate |
-| `backend/app/db/` | pgvector pool + SQL migrations |
-| `ingestion/pipeline/` | Loaders, chunking, hashing, sources, indexer, CLI, SQS worker |
-| `eval/` | Evaluation harness (retrieval + LLM-judge) |
-| `frontend/` | Next.js + Tailwind chat UI + `Dockerfile` — streaming, citations, theme, SSO |
+| `backend/app/db/` | pgvector pool + SQL migrations (incl. the financial fact store) |
+| `ingestion/pipeline/` | Loaders, chunking, indexer, SQS worker + `facts.py`/`reconcile.py`/`financial.py` (numeric path) |
+| `eval/` | Retrieval + LLM-judge harness; `eval/financial/` = offline ground-truth figure eval |
+| `frontend/` | Next.js + Tailwind chat UI + metrics panel + `Dockerfile` — streaming, citations, SSO |
 | `infra/terraform/` | AWS IaC — ECS Fargate, RDS, S3→SQS, ECR, Secrets Manager |
-| `backend/app/extraction/` | **(planned)** financial-parser adapter behind the `FinancialParser` Protocol |
-| `backend/app/finance/` | **(planned)** deterministic compute layer + citation-faithfulness verifier |
-| `ingestion/pipeline/` (extract, facts, reconcile, sources/edgar) | **(planned)** numeric ingestion path + watchlist feed |
-| `eval/financial/` | **(planned)** ground-truth figures + reconciliation + faithfulness runners |
 
 ## Cost
 
@@ -319,6 +334,7 @@ high-confidence queries go to Haiku ($1/$5 per 1M), typical to Sonnet ($3/$15), 
 only low-confidence/long-context/complex queries to Opus ($5/$25). Prompt-caching the
 system + retrieved-context prefix further cuts repeated-context cost. Voyage
 embeddings/rerank are cheap; the AWS footprint (RDS `t4g.micro`, small Fargate tasks,
-one NAT gateway) is low-tens of dollars a month at modest traffic. **(planned)** the
-commercial parser adds a per-page extraction cost at ingest — a new, meaningful line
-item the financial pipeline introduces.
+one NAT gateway) is low-tens of dollars a month at modest traffic. Textract adds a
+per-page extraction cost at ingest, but only for PDF/scan documents
+(`FINANCIAL_PARSER=textract`) — HTML filings ingest free via the built-in parser,
+and `/metrics` queries cost nothing at all (no LLM in the path).

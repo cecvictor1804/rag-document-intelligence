@@ -1,0 +1,32 @@
+# Ground-truth figure set over the sample filing(s). Each case must resolve to
+# EXACTLY the expected value (computed metrics are quantized to 0.001 by the
+# compute layer, so expectations are exact too; `tolerance` is an optional
+# absolute slack, default 0).
+#
+# To add a case: ingest the document below, state the number you can verify by
+# hand against the filing, and the period it belongs to.
+
+entity: ACME
+entity_name: Acme Corp
+files:
+  - sample_docs/acme_corp_10q_q3_2024.html
+
+cases:
+  # Reported figures (extraction exactness — straight from table cells)
+  - {metric: revenue,           fiscal_year: 2024, fiscal_quarter: 3, expected: "94930000000"}
+  - {metric: revenue,           fiscal_year: 2023, fiscal_quarter: 3, expected: "89498000000"}
+  - {metric: gross_profit,      fiscal_year: 2024, fiscal_quarter: 3, expected: "43879000000"}
+  - {metric: operating_income,  fiscal_year: 2024, fiscal_quarter: 3, expected: "29591000000"}
+  - {metric: net_income,        fiscal_year: 2024, fiscal_quarter: 3, expected: "14736000000"}
+  - {metric: eps_diluted,       fiscal_year: 2024, fiscal_quarter: 3, expected: "0.97"}
+  - {metric: total_assets,      fiscal_year: 2024, fiscal_quarter: 3, expected: "364980000000"}
+  - {metric: total_liabilities, fiscal_year: 2024, fiscal_quarter: 3, expected: "308030000000"}
+  - {metric: total_equity,      fiscal_year: 2024, fiscal_quarter: 3, expected: "56950000000"}
+
+  # Computed metrics (deterministic arithmetic over the facts above)
+  - {metric: gross_margin,      fiscal_year: 2024, fiscal_quarter: 3, expected: "46.222"}
+  - {metric: operating_margin,  fiscal_year: 2024, fiscal_quarter: 3, expected: "31.171"}
+  - {metric: net_margin,        fiscal_year: 2024, fiscal_quarter: 3, expected: "15.523"}
+  - {metric: current_ratio,     fiscal_year: 2024, fiscal_quarter: 3, expected: "0.867"}
+  - {metric: debt_to_equity,    fiscal_year: 2024, fiscal_quarter: 3, expected: "5.409"}
+  - {metric: revenue_yoy,       fiscal_year: 2024, fiscal_quarter: 3, expected: "6.069"}
