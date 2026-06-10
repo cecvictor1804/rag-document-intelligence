@@ -27,6 +27,9 @@ ingest:            ## Backfill/re-index a folder: make ingest SOURCE=./sample_do
 reindex:           ## Alias for ingest (idempotent)
 	$(PYTHON) -m ingestion.pipeline.run --source "$(SOURCE)"
 
+ingest-financial:  ## Extract facts: make ingest-financial ENTITY=ACME FILES="sample_docs/acme_corp_10q_q3_2024.html"
+	$(PYTHON) -m ingestion.pipeline.run_financial --entity "$(ENTITY)" $(FILES)
+
 query:             ## Run a one-shot query: make query Q="how do I reset my password?"
 	curl -N -s -X POST localhost:8000/query -H 'content-type: application/json' \
 		-d '{"query": "$(Q)"}'

@@ -117,6 +117,11 @@ class MetricStore(Protocol):
     implementation resolves conflicts via the authoritative-facts view
     (authority rank, then filing recency)."""
 
+    async def upsert_entity(
+        self, entity_id: str, name: str, ticker: str | None = None,
+        cik: str | None = None,
+    ) -> None: ...
+
     async def upsert_document(self, meta: FinancialDocMeta) -> None: ...
 
     async def upsert_facts(self, facts: Sequence[FinancialFact]) -> int: ...

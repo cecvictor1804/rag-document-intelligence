@@ -73,15 +73,17 @@ def reconcile(
         if assets is not None and liabilities is not None and equity is not None:
             check("balance_identity", period, assets, liabilities + equity)
 
-        # Income statement: Revenue - CoR = Gross profit.
+        # Income statement: Revenue - CoR = Gross profit. Cost/expense lines
+        # are printed positive in some filings and parenthesized-negative in
+        # others, so identities use magnitudes.
         revenue, cor, gross = (
             get("revenue"), get("cost_of_revenue"), get("gross_profit"))
         if revenue is not None and cor is not None and gross is not None:
-            check("gross_profit", period, gross, revenue - cor)
+            check("gross_profit", period, gross, revenue - abs(cor))
 
         # Operating income = Gross profit - Operating expenses.
         opex, op_income = get("operating_expenses"), get("operating_income")
         if gross is not None and opex is not None and op_income is not None:
-            check("operating_income", period, op_income, gross - opex)
+            check("operating_income", period, op_income, gross - abs(opex))
 
     return issues
