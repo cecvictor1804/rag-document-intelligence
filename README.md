@@ -1,64 +1,106 @@
-# Internal Documentation RAG
+# Financial Document Intelligence
 
-Grounded, cited answers over internal company documentation, behind Google
-Workspace SSO. Documents in S3 (PDF / DOCX / Markdown / HTML / TXT) are chunked,
-embedded, and indexed in Postgres (pgvector); queries run hybrid retrieval
-(dense + lexical) with reranking, then a Claude model — chosen by a cost-aware
-routing layer — synthesizes an answer with inline citations.
+Grounded, cited, and **computed** answers over financial documents — SEC filings
+(10-K/10-Q), earnings materials, and internal statements — behind Google Workspace
+SSO. Unlike a generic document chatbot, **tables and numbers are first-class**: figures
+are extracted into a canonical metric store with **cell-level provenance**, metrics
+(YoY growth, margins, ratios) are **computed deterministically** rather than guessed
+by an LLM, and every number in an answer cites the exact source cell it came from.
 
-> **Build status:** complete through Phase 4. Phase 1 (scaffold + local
-> ingestion), the Phase 2 query **engine** (hybrid retrieval → rerank →
-> cost-routed Claude generation + eval harness), the Phase 2b **HTTP API**
-> (FastAPI `/query` SSE, `/feedback`, `/health`), the Phase 3a **web UI**
-> (Next.js + Tailwind, streaming cited answers, adaptive light/dark), the Phase 3b
-> **Google Workspace SSO gate** (OIDC login in Next.js; the backend independently
-> verifies the Google ID token), and the Phase 4 **deployment** (frontend
-> container + AWS Terraform on ECS Fargate) are implemented and tested.
+> **Build status (honest).** The underlying **platform** is built and tested —
+> ingestion → hybrid retrieval → cost-routed Claude generation → FastAPI SSE API →
+> Next.js UI → Google SSO → AWS ECS Fargate deploy (Phases 1–4). The **financial
+> intelligence layer** — structured table/number extraction, the canonical metric
+> store, the deterministic compute layer, cell-cited verification, and advice
+> guardrails — is the **current focus (Phase 5)** and is **not yet built**.
+> Throughout this README, capabilities that don't run today are marked **(planned)**.
+> See the [Roadmap](#roadmap).
 
 ## Contents
 
-- [Architecture](#architecture) · [How it works](#how-it-works)
+- [Why finance is different](#why-finance-is-different) · [Architecture](#architecture) · [How it works](#how-it-works)
 - [Requirements](#requirements) · [Setup](#setup) · [Configuration](#configuration)
 - [Running the stack](#running-the-stack) · [API endpoints](#api-endpoints) · [Authentication](#authentication)
 - [Evaluation](#evaluation) · [Testing](#testing) · [Deployment](#deployment)
-- [Project layout](#project-layout) · [Cost](#cost)
+- [Roadmap](#roadmap) · [Project layout](#project-layout) · [Cost](#cost)
+
+## Why finance is different
+
+Plain RAG retrieves and paraphrases text. That fails on financial documents for four
+reasons, and the design exists to address each:
+
+- **The numbers live in tables.** A balance sheet flattened to text becomes an
+  unaligned word-soup; "what was Q3 revenue" can't be answered reliably from it. We
+  extract tables as structured cells, not prose.
+- **Answers must be computed, not retrieved.** YoY growth, gross margin, and the
+  current ratio are arithmetic over figures — done in **code**, deterministically,
+  never freehand by the model.
+- **Comparisons span periods and documents.** Trends (QoQ, multi-quarter) require a
+  period-aligned model across filings, including restatements.
+- **A wrong number is unacceptable.** Every figure is tied to an exact source cell and
+  **verified** after generation; unsupported numbers are suppressed. The assistant
+  gives factual analysis only — **no buy/sell/hold advice**.
 
 ## Architecture
 
 ```
-              Google SSO (OIDC, hd-gated)
+          Google Workspace SSO (OIDC, hd-gated) ── built
                         │
-   Next.js UI ──────────┼─────────► FastAPI backend ──► hybrid retrieval ──► rerank ──► Claude (routed)
-   (stream + citations)               /query (SSE)        (pgvector +              Haiku/Sonnet/Opus
-                                      /ingest /feedback     tsvector, RRF)
-                                      /health
-                        ▲
-   S3 docs ─► SQS ─► ingest worker ─► loaders → clean → chunk → embed (Voyage) → upsert (pgvector)
-   (ObjectCreated/Removed)            (idempotent: doc + chunk content hashes)
+  Next.js UI ───────────┼───► FastAPI ──┬─► /query    (narrative, SSE) ──────────── built
+  chat + metrics panel* │               ├─► /metrics  (figure + source cell)* ───── planned
+  drill-down to cell*   │               └─► /feedback · /health ──────────────────── built
+                        ▼
+  ┌─ narrative substrate (built) ───────────┐   ┌─ numeric substrate (planned, Phase 5) ────┐
+  │ loaders → chunk → embed (Voyage) →       │   │ commercial parser → fact mapper           │
+  │ pgvector; hybrid retrieval → rerank →    │   │  (units/scale/currency norm, canonical +  │
+  │ cost-routed Claude with [n] citations    │   │   as-reported line items, fiscal periods, │
+  └──────────────────────────────────────────┘   │   GAAP/non-GAAP, segment, cell provenance)│
+                                                  │ → canonical metric store (restatement     │
+  documents ─► ingest worker ─► both substrates   │   lineage, source precedence)             │
+  S3 upload · EDGAR feed* · watchlist (CIK)*       │ → deterministic compute (ratios/growth)  │
+                                                  │ → cite-cell + verify → advice guardrails  │
+                        * = planned                └────────────────────────────────────────── ┘
 ```
 
-Every external boundary (embeddings, rerank, LLM, vector DB) is swappable behind
-a Protocol in `backend/app/core/interfaces.py`; pgvector can be replaced by a
-managed vector DB without touching retrieval or generation.
+Every external boundary (embeddings, rerank, LLM, vector DB, and the **financial
+parser** (planned)) is swappable behind a Protocol in
+`backend/app/core/interfaces.py` — so the commercial extraction vendor, like the
+vector DB, can be replaced without touching the rest of the system.
 
 ## How it works
 
-**Ingestion.** Loaders read each document (PDF/DOCX/Markdown/HTML/TXT), clean and
-chunk it, embed the chunks with Voyage, and upsert them into pgvector. The run is
-**idempotent** — doc- and chunk-level content hashes mean re-indexing only touches
-what changed and prunes documents that disappeared from the source. The CLI prints
-a JSON summary: `docs_seen / changed / skipped / chunks_upserted / chunks_deleted /
-docs_deleted / failures`.
+**Ingestion — narrative (built).** Loaders read each document
+(PDF/DOCX/Markdown/HTML/TXT), clean and chunk it, embed the chunks with Voyage, and
+upsert them into pgvector. The run is **idempotent** — doc- and chunk-level content
+hashes mean re-indexing only touches what changed and prunes deleted documents. The
+CLI prints a JSON summary: `docs_seen / changed / skipped / chunks_upserted /
+chunks_deleted / docs_deleted / failures`.
 
-**Query.** A question is embedded and searched both ways (dense HNSW + lexical
-tsvector), fused with Reciprocal Rank Fusion, reranked, then a cost-aware router
-picks a Claude model (Haiku/Sonnet/Opus) that streams a grounded answer with
-inline `[n]` citations. If the best reranked chunk falls below `MIN_RERANK_SCORE`,
-the engine returns "I don't know" **without** calling Claude. Everything wires up
-in `backend/app/deps.py` (`answer_service()`), the seam the API imports.
+**Ingestion — numeric (planned).** A commercial financial parser turns tables (incl.
+scanned/OCR) and any XBRL into structured cells; a **fact mapper** normalizes
+scale/currency/units (storing a canonical base value alongside the as-reported one),
+maps line items to a canonical chart while **keeping the company's own label**,
+resolves the fiscal period, tags GAAP vs non-GAAP and segment vs consolidated, and
+attaches **page/table/row/col provenance**. **Reconciliation invariants** (line items
+sum to stated totals; Assets = Liabilities + Equity) flag bad extractions instead of
+trusting them. Facts land in a **canonical metric store** with restatement lineage and
+a **source-precedence hierarchy** (audited filing > amendment > press release; latest
+restatement wins; alternates kept).
 
-**Frontend / auth.** The browser talks **only** to Next.js, which proxies to the
-FastAPI backend (no CORS) and acts as the OAuth client when auth is on — see
+**Query — narrative (built).** A question is embedded and searched both ways (dense
+HNSW + lexical tsvector), fused with Reciprocal Rank Fusion, reranked, then a
+cost-aware router picks a Claude model (Haiku/Sonnet/Opus) that streams a grounded
+answer with inline `[n]` citations. Below `MIN_RERANK_SCORE`, it returns "I don't
+know" **without** calling Claude. Wiring lives in `backend/app/deps.py`.
+
+**Query — numeric (planned).** A planner translates a question into a structured query
+over the metric store; the **deterministic compute layer** runs the math and returns
+the **exact source facts/cells**; Claude narrates **only verified values**, and a
+**citation-faithfulness verifier** rejects any number not backed by a returned fact.
+**Advice guardrails** refuse recommendations and attach disclaimers.
+
+**Frontend / auth (built).** The browser talks **only** to Next.js, which proxies to
+the FastAPI backend (no CORS) and acts as the OAuth client when auth is on — see
 [Authentication](#authentication).
 
 ## Requirements
@@ -68,6 +110,7 @@ FastAPI backend (no CORS) and acts as the OAuth client when auth is on — see
 - A `VOYAGE_API_KEY` (embeddings/rerank) and `ANTHROPIC_API_KEY` (generation).
   These incur cost; nothing calls them until you run ingestion/queries.
 - Node 20+ (only for the web UI).
+- **(planned)** a commercial financial-parser API key, once Phase 5 lands.
 
 ## Setup
 
@@ -88,12 +131,15 @@ cp .env.example .env        # fill in keys; never commit .env
 ## Configuration
 
 All knobs live in `backend/app/config.py` and are documented in `.env.example`:
-DB URL, document source (local folder vs S3), embedding/rerank provider,
-chunking, retrieval top-k's, the model-routing thresholds, and the Google SSO
-hosted-domain gate. No secrets are hardcoded; in AWS these come from Secrets
-Manager.
+DB URL, document source (local folder vs S3), embedding/rerank provider, chunking,
+retrieval top-k's, the model-routing thresholds, and the Google SSO hosted-domain
+gate. No secrets are hardcoded; in AWS these come from Secrets Manager. (The financial
+parser, metric-store, and watchlist/EDGAR settings arrive with Phase 5 — **planned**.)
 
 ## Running the stack
+
+This runs the **platform as it exists today**: ingest documents and ask narrative
+questions. (Numeric metric queries are **planned** — see [Roadmap](#roadmap).)
 
 ### 1. Ingest documents
 
@@ -105,8 +151,7 @@ make ingest SOURCE=./sample_docs    # re-run: everything reports "skipped"
 ```
 
 No DB handy? `python scripts/smoke_phase1.py` imports every module and runs the
-loaders + chunker over `sample_docs/` (no DB or API key needed). The idempotency
-and deletion-detection logic is covered by `ingestion/tests/test_indexer.py`.
+loaders + chunker over `sample_docs/` (no DB or API key needed).
 
 ### 2. Run the API
 
@@ -127,8 +172,8 @@ By default the API is **open** (`AUTH_ENABLED=false`) — bind to localhost. Set
 
 A polished Next.js 16 + Tailwind v4 chat UI lives in `frontend/`. It streams the
 answer token-by-token with inline `[n]` citations, a Sources panel, a routed-model
-badge, thumbs up/down feedback, and an **adaptive light/dark theme** (system-aware,
-toggle, persisted).
+badge, thumbs up/down feedback, and an **adaptive light/dark theme**. (A metrics
+panel with charts and drill-down to the source cell is **planned**.)
 
 ```bash
 # With the API running (step 2):
@@ -141,11 +186,13 @@ make frontend                    # cd frontend && npm run dev  → http://localh
 
 - `POST /query` — body `{"query": "...", "history": [...]}`; streams **Server-Sent
   Events**, one per answer event: `meta` (routing decision) → `token`… → `citations`
-  → `done`. Try it: `make query Q="How much can I expense for meals?"`.
+  → `done`. The narrative substrate. Try it: `make query Q="..."`.
 - `POST /feedback` — `{"query","answer","rating": 1|-1, "comment?", "chunk_ids?"}` →
-  `{"id": N}`; persists to the `feedback` table (attributed to the signed-in user
-  when auth is on, else `anonymous@local`).
+  `{"id": N}`; persists to the `feedback` table (attributed to the signed-in user when
+  auth is on, else `anonymous@local`).
 - `GET /health` — `200 {"status":"ok"}` when the DB is reachable, else `503`.
+- **(planned)** `POST /metrics` — `{entity, period, line-item|ratio}` → a value with
+  its **exact source cell** (page/table/row/col) and as-reported + canonical forms.
 
 ## Authentication
 
@@ -176,8 +223,8 @@ To enable it locally you need a one-time Google OAuth client:
    `GOOGLE_HOSTED_DOMAIN=yourcompany.com` (see `.env.example`).
 
 Then visiting `/` redirects to `/sign-in`; after Google consent you land on the
-chat with a user menu, questions carry your verified identity, accounts outside
-the hosted domain are rejected, and "Sign out" clears the session.
+chat, questions carry your verified identity, accounts outside the hosted domain are
+rejected, and "Sign out" clears the session.
 
 ## Evaluation
 
@@ -186,11 +233,13 @@ make eval                            # retrieval metrics + LLM-judge groundednes
 python -m eval.run_eval --no-judge   # retrieval metrics only — deterministic, no API cost
 ```
 
-`eval/cases.yaml` holds the question → `expected_doc_ids` cases over `sample_docs/`.
-**To add a case**, append an entry (`question:` + `expected_doc_ids:` list of the
-doc_ids that should ground a correct answer). `run_eval` reports per-case
-hit-rate@k, MRR, recall@k, and (unless `--no-judge`) a groundedness score; the
-aggregate row is the mean across cases.
+`eval/cases.yaml` holds question → `expected_doc_ids` cases; `run_eval` reports per-case
+hit-rate@k, MRR, recall@k, and (unless `--no-judge`) an LLM-judge groundedness score.
+
+**Numeric eval (planned).** Retrieval + judge can't check arithmetic, so Phase 5 adds
+three deterministic layers: a **ground-truth figure set** (question → expected number +
+tolerance, CI-failing), **reconciliation invariants** (sums/accounting identities), and
+a **citation-faithfulness** check (every number in an answer maps to its cited cell).
 
 ## Testing
 
@@ -210,39 +259,66 @@ Frontend: `cd frontend && npm run typecheck && npm test && npm run build`.
 docker compose --profile full up --build   # db + migrate + backend API + web UI → :3000
 ```
 
-**AWS (ECS Fargate).** `infra/terraform/` provisions a VPC, RDS Postgres
-(pgvector), an S3 docs bucket wired to SQS, ECR, Secrets Manager, and a Fargate
-cluster running three services — the **frontend** behind a public ALB, the
-**backend** reached privately over ECS Service Connect, and the long-polling
-**ingest worker** (S3 → SQS → re-index). One backend image serves the API, the
-worker, and migrations. See [infra/terraform/README.md](infra/terraform/README.md)
-for the full apply → build/push → migrate runbook.
+**AWS (ECS Fargate).** `infra/terraform/` provisions a VPC, RDS Postgres (pgvector),
+an S3 docs bucket wired to SQS, ECR, Secrets Manager, and a Fargate cluster running
+three services — the **frontend** behind a public ALB, the **backend** reached
+privately over ECS Service Connect, and the long-polling **ingest worker** (S3 → SQS →
+re-index). One backend image serves the API, the worker, and migrations. See
+[infra/terraform/README.md](infra/terraform/README.md) for the full runbook.
 
 ```bash
 make tf-init && make tf-plan      # then `make tf-apply`
 ```
 
+## Roadmap
+
+The platform (Phases 1–4) is done. The financial pivot is **Phase 5**, sequenced so
+each slice is shippable:
+
+- **5a — Extraction + fact store + computed metrics** (the first slice). Commercial
+  parser behind a Protocol, the fact mapper, the canonical metric store with cell
+  provenance + restatement precedence, reconciliation invariants, the deterministic
+  compute layer, the cite-cell + verify guarantee, advice guardrails, a `POST /metrics`
+  endpoint + minimal metrics panel, and the finance eval (ground-truth + reconciliation
+  + faithfulness).
+- **5b — Unified querying.** NL→structured-query planner that merges numeric and
+  narrative answers in one surface; multi-period **charts** and trend/compare UI.
+- **5c — Breadth & depth.** FX conversion with as-of rates; broader entity universe +
+  dedup; segment/footnote-aware querying; non-GAAP reconciliation views.
+- **5d — Scale & ops.** Parallel extraction for true near-real-time ingest, cost
+  controls, and a human-in-the-loop review queue for low-confidence figures.
+
+Open sub-decisions before 5a: which commercial parser, the canonical chart of
+accounts, and whether the watchlist feed is EDGAR-only or also manual upload.
+
 ## Project layout
+
+Built today, plus the **(planned)** Phase 5 modules:
 
 | Path | What |
 |------|------|
 | `backend/app/core/` | Shared contract: DTOs + swappable Protocols |
-| `backend/app/embeddings/`, `rerank/`, `vectorstore/`, `llm/` | Provider impls |
+| `backend/app/embeddings/`, `rerank/`, `vectorstore/`, `llm/` | Provider impls (narrative) |
 | `backend/app/retrieval/`, `generation/`, `deps.py` | Hybrid retrieval, answer orchestration + routing, wiring |
 | `backend/app/api/`, `main.py`, `feedback.py` | FastAPI routes (`/query` SSE, `/feedback`, `/health`) + app |
 | `backend/app/auth.py` | Google ID-token verification + the `require_user` gate |
 | `backend/app/db/` | pgvector pool + SQL migrations |
 | `ingestion/pipeline/` | Loaders, chunking, hashing, sources, indexer, CLI, SQS worker |
-| `eval/` | Evaluation harness (Phase 2) |
-| `frontend/` | Next.js + Tailwind chat UI + `Dockerfile` — streaming, citations, theme, SSO (Phase 3) |
-| `infra/terraform/` | AWS IaC — ECS Fargate, RDS, S3→SQS, ECR, Secrets Manager (Phase 4) |
+| `eval/` | Evaluation harness (retrieval + LLM-judge) |
+| `frontend/` | Next.js + Tailwind chat UI + `Dockerfile` — streaming, citations, theme, SSO |
+| `infra/terraform/` | AWS IaC — ECS Fargate, RDS, S3→SQS, ECR, Secrets Manager |
+| `backend/app/extraction/` | **(planned)** financial-parser adapter behind the `FinancialParser` Protocol |
+| `backend/app/finance/` | **(planned)** deterministic compute layer + citation-faithfulness verifier |
+| `ingestion/pipeline/` (extract, facts, reconcile, sources/edgar) | **(planned)** numeric ingestion path + watchlist feed |
+| `eval/financial/` | **(planned)** ground-truth figures + reconciliation + faithfulness runners |
 
 ## Cost
 
-Claude generation dominates; the routing layer is the primary lever — easy,
-high-confidence queries go to Haiku ($1/$5 per 1M), typical to Sonnet
-($3/$15), and only low-confidence/long-context/complex queries to Opus
-($5/$25). Prompt-caching the system + retrieved-context prefix further cuts
-repeated-context cost. Voyage embeddings/rerank are cheap; the AWS footprint
-(RDS `t4g.micro`, small Fargate tasks, one NAT gateway) is low-tens of dollars a
-month at modest traffic — the NAT gateway and RDS are the floor.
+Claude generation dominates today; the routing layer is the primary lever — easy,
+high-confidence queries go to Haiku ($1/$5 per 1M), typical to Sonnet ($3/$15), and
+only low-confidence/long-context/complex queries to Opus ($5/$25). Prompt-caching the
+system + retrieved-context prefix further cuts repeated-context cost. Voyage
+embeddings/rerank are cheap; the AWS footprint (RDS `t4g.micro`, small Fargate tasks,
+one NAT gateway) is low-tens of dollars a month at modest traffic. **(planned)** the
+commercial parser adds a per-page extraction cost at ingest — a new, meaningful line
+item the financial pipeline introduces.
