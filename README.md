@@ -14,12 +14,14 @@ by an LLM, and every number in an answer cites the exact source cell it came fro
 > adapter — canonical metric store with cell-level provenance and restatement
 > precedence, deterministic metric computation, citation-faithfulness
 > verification, hard advice guardrails, `POST /metrics` + a metrics panel, and
-> an offline financial eval), and **5b unified querying** (an NL→query planner
-> that merges verified figures into chat answers with metric cards + trend
-> charts and post-stream number verification, plus the EDGAR watchlist feed).
-> Still to come — marked **(planned)** below: FX, broader entity coverage,
-> fiscal calendars (5c); async multi-page Textract and scale/ops (5d). See the
-> [Roadmap](#roadmap).
+> an offline financial eval), **5b unified querying** (an NL→query planner that
+> merges verified figures into chat answers with metric cards + trend charts
+> and post-stream number verification, plus the EDGAR watchlist feed), and
+> **5c/5d depth & ops** (entity fiscal calendars with EDGAR auto-detect,
+> annotated FX conversion from ECB reference rates, ratio trend series,
+> GAAP↔non-GAAP counterparts, segment revenue, async multi-page Textract, a
+> parallel financial path in the SQS worker, and a human-in-the-loop review
+> queue). Remaining ideas live in the [Roadmap](#roadmap).
 
 ## Contents
 
@@ -87,12 +89,15 @@ chunks_deleted / docs_deleted / failures`.
 **Ingestion — numeric (built).** A financial parser turns tables into structured
 cells — the built-in HTML parser for native-HTML filings (what EDGAR 10-K/10-Qs
 are), or **AWS Textract** for PDFs/scans (chosen because the deploy is already
-AWS: documents stay in-account, IAM instead of vendor API keys; multi-page async
-analysis is **planned**). A **fact mapper** normalizes scale/currency/units
-(storing a canonical base value alongside the as-reported one), maps line items
-to a canonical chart while **keeping the company's own label**, resolves the
-fiscal period, tags GAAP vs non-GAAP, and attaches **page/table/row/col
-provenance**. **Reconciliation invariants** (Assets = Liabilities + Equity;
+AWS: documents stay in-account, IAM instead of vendor API keys; multi-page
+documents use the async S3-based analysis with a page-count cost flag). A
+**fact mapper** normalizes scale/currency/units (storing a canonical base value
+alongside the as-reported one), maps line items to a canonical chart while
+**keeping the company's own label**, resolves the fiscal period **on the
+entity's own fiscal calendar** (offset FYEs auto-detected from EDGAR), tags
+GAAP vs non-GAAP (adjusted labels pair with their GAAP counterparts), extracts
+**segment revenue** from revenue-by-segment tables, and attaches
+**page/table/row/col provenance**. **Reconciliation invariants** (Assets = Liabilities + Equity;
 Revenue − CoR = Gross profit) flag bad extractions instead of trusting them.
 Facts land in the **canonical metric store** with restatement lineage and a
 **source-precedence hierarchy** (audited filing > amendment > press release;
@@ -194,11 +199,13 @@ By default the API is **open** (`AUTH_ENABLED=false`) — bind to localhost. Set
 ### 3. Run the web UI
 
 A polished Next.js 16 + Tailwind v4 chat UI lives in `frontend/`. It streams the
-answer token-by-token with inline `[n]` citations, a Sources panel, a routed-model
-badge, thumbs up/down feedback, an **adaptive light/dark theme**, and a **metrics
-panel** (chart icon in the header) that looks up figures/ratios deterministically
-and shows the exact source cell of every input. (Charts/trend views are
-**planned**, 5b.)
+answer token-by-token with inline `[n]` citations, **metric cards and trend
+charts** for planner-resolved figures, a Sources panel, a routed-model badge,
+thumbs up/down feedback, and an **adaptive light/dark theme**. The **metrics
+panel** (chart icon in the header) looks up figures/ratios deterministically —
+with optional FX conversion and the non-GAAP counterpart — shows the exact
+source cell of every input, and surfaces flagged extractions in its **Data
+quality** section.
 
 ```bash
 # With the API running (step 2):
@@ -215,12 +222,17 @@ make frontend                    # cd frontend && npm run dev  → http://localh
 - `POST /feedback` — `{"query","answer","rating": 1|-1, "comment?", "chunk_ids?"}` →
   `{"id": N}`; persists to the `feedback` table (attributed to the signed-in user when
   auth is on, else `anonymous@local`).
+- `GET /review` — open reconciliation issues (extractions a human should look
+  at), newest first.
 - `GET /health` — `200 {"status":"ok"}` when the DB is reachable, else `503`.
-- `POST /metrics` — `{"entity","metric","fiscal_year","fiscal_quarter?","basis?"}` →
-  the value (Decimal-as-string for exactness) plus, per input figure, the **exact
-  source cell** (doc, page, table, row, col), the as-reported label/value/scale,
-  and a disclaimer. `metric` is a canonical line item (`revenue`), a ratio
-  (`gross_margin`), or a YoY growth (`revenue_yoy`). Deterministic — no LLM.
+- `POST /metrics` — `{"entity","metric","fiscal_year","fiscal_quarter?","basis?",
+  "segment?","currency?"}` → the value (Decimal-as-string for exactness) plus,
+  per input figure, the **exact source cell** (doc, page, table, row, col) and
+  the as-reported label/value/scale; optional extras are **annotated, never
+  silent**: `converted` (FX value + applied rate + as-of date) and
+  `non_gaap_alternative` (the adjusted counterpart, clearly tagged). `metric` is
+  a canonical line item (`revenue`), a ratio (`gross_margin`), or a YoY growth
+  (`revenue_yoy`). Deterministic — no LLM.
 
 ## Authentication
 
@@ -318,12 +330,22 @@ sequenced so each slice is shippable:
   figures into chat answers (metric cards + trend charts + post-stream number
   verification), and `make edgar-sync` pulls a watchlist entity's recent
   10-K/10-Q filings straight from SEC EDGAR into the metric store.
-- **5c — Breadth & depth.** FX conversion with as-of rates; broader entity universe +
-  dedup; segment/footnote-aware querying; non-GAAP reconciliation views; entity
-  fiscal calendars (today periods are calendar-aligned); ratio series for charts.
-- **5d — Scale & ops.** Multi-page async Textract (S3-based), parallel extraction
-  for true near-real-time ingest, cost controls, and a human-in-the-loop review
-  queue for low-confidence figures.
+- **5c — Financial depth** ✅ shipped: entity **fiscal calendars** (offset FYEs
+  like Apple's September labeled correctly; auto-detected from EDGAR), **FX
+  conversion** with as-of ECB reference rates (annotated — the applied rate +
+  date travel with the value, never a silent swap; `make fx-load`), **ratio
+  trend series** (margin charts), **GAAP↔non-GAAP counterparts** surfaced side
+  by side, and **segment revenue** extraction/querying (revenue-by-segment
+  tables only — deliberately narrow).
+- **5d — Scale & ops** ✅ shipped: **async multi-page Textract** (S3-based, page
+  aggregation, temp-object cleanup, a page-count cost flag), a **parallel
+  financial path in the SQS worker** (`<ENTITY>/<file>` keys, bounded
+  concurrency), and the **review queue** — reconciliation violations persist to
+  `reconciliation_issues`, served by `GET /review` and shown in the metrics
+  panel's Data quality section.
+- **Deferred (needs real-world corpus to build against):** footnote-aware
+  querying, broad entity universe + dedup, segment beyond revenue-by-segment,
+  spend dashboards beyond the page cap.
 
 ## Project layout
 

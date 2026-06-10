@@ -78,7 +78,10 @@ class FinancialIngestor:
         entity_name: str | None = None,
         doc_type: str | None = None,
         filed_date: date | None = None,
+        fye_month: int = 12,
     ) -> FinancialIngestSummary:
+        """`fye_month` is the entity's fiscal-year-end month (12 = calendar);
+        it drives fiscal period labeling for offset-FYE companies."""
         inferred_type, authority = infer_doc_type(doc_type or ref.doc_id)
         meta = FinancialDocMeta(
             doc_id=ref.doc_id,
@@ -90,7 +93,7 @@ class FinancialIngestor:
         )
 
         parsed = await self.parser.parse(ref, content)
-        facts = map_document_tables(parsed.tables, meta)
+        facts = map_document_tables(parsed.tables, meta, fye_month=fye_month)
         issues = reconcile(facts)
         for issue in issues:
             logger.warning(
@@ -98,9 +101,14 @@ class FinancialIngestor:
                 issue.detail, issue.expected, issue.actual,
             )
 
-        await self.store.upsert_entity(entity_id, entity_name or entity_id)
+        await self.store.upsert_entity(
+            entity_id, entity_name or entity_id, fye_month=fye_month
+        )
         await self.store.upsert_document(meta)
         upserted = await self.store.upsert_facts(facts)
+        if issues:
+            # Persisted for the human-in-the-loop review queue (GET /review).
+            await self.store.record_issues(issues)
 
         return FinancialIngestSummary(
             doc_id=ref.doc_id,

@@ -32,7 +32,8 @@ logger = logging.getLogger("rag.financial")
 
 
 async def _run(
-    files: list[str], entity: str, name: str | None, filed: date | None
+    files: list[str], entity: str, name: str | None, filed: date | None,
+    fye_month: int,
 ) -> int:
     settings = get_settings()
     ingestor = FinancialIngestor(build_financial_parser(settings), PgMetricStore())
@@ -48,7 +49,8 @@ async def _run(
             )
             try:
                 summary = await ingestor.ingest(
-                    ref, path.read_bytes(), entity, name, filed_date=filed
+                    ref, path.read_bytes(), entity, name, filed_date=filed,
+                    fye_month=fye_month,
                 )
             except Exception as exc:  # noqa: BLE001 — report and continue
                 logger.error("failed to ingest %s: %s", path, exc)
@@ -71,11 +73,17 @@ def main() -> None:
         "--filed", default=None,
         help="Filing date YYYY-MM-DD (drives restatement precedence).",
     )
+    parser.add_argument(
+        "--fye-month", default=12, type=int, choices=range(1, 13),
+        help="Entity fiscal-year-end month (12 = calendar; Apple = 9).",
+    )
     args = parser.parse_args()
     filed = datetime.strptime(args.filed, "%Y-%m-%d").date() if args.filed else None
 
     configure_logging(get_settings().log_level)
-    raise SystemExit(asyncio.run(_run(args.files, args.entity, args.name, filed)))
+    raise SystemExit(
+        asyncio.run(_run(args.files, args.entity, args.name, filed, args.fye_month))
+    )
 
 
 if __name__ == "__main__":

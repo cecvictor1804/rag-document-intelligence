@@ -119,12 +119,33 @@ class MetricStore(Protocol):
 
     async def upsert_entity(
         self, entity_id: str, name: str, ticker: str | None = None,
-        cik: str | None = None,
+        cik: str | None = None, fye_month: int | None = None,
     ) -> None: ...
 
     async def upsert_document(self, meta: FinancialDocMeta) -> None: ...
 
     async def upsert_facts(self, facts: Sequence[FinancialFact]) -> int: ...
+
+    async def record_issues(self, issues: Sequence[Any]) -> None:
+        """Persist reconciliation issues for the review queue."""
+        ...
+
+    async def list_open_issues(self, limit: int = 50) -> list[dict[str, Any]]:
+        """Unresolved reconciliation issues, newest first."""
+        ...
+
+    async def upsert_fx_rates(
+        self, rows: Sequence[tuple[Any, str, str, Any]]
+    ) -> int:
+        """(rate_date, base, quote, rate) reference rows."""
+        ...
+
+    async def get_fx_rate(
+        self, base: str, quote: str, as_of: Any | None = None
+    ) -> tuple[Any, Any] | None:
+        """(rate, rate_date) converting base→quote at the nearest date ≤ as_of
+        (latest available when as_of is None); cross rates derived via EUR."""
+        ...
 
     async def get_fact(
         self,

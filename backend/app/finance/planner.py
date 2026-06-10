@@ -40,6 +40,7 @@ class PlannedRequest:
     fiscal_year: int | None = None
     fiscal_quarter: int | None = None
     series: bool = False
+    segment: str | None = None  # business segment, when the user named one
 
 
 @dataclass(slots=True)
@@ -59,7 +60,7 @@ _SYSTEM = (
     "company filings. Respond with ONLY a JSON object, no prose, shaped as:\n"
     '{"needs_financial_data": bool, "entity": string|null, "requests": '
     '[{"metric": string, "fiscal_year": int|null, "fiscal_quarter": 1|2|3|4|null, '
-    '"series": bool}]}\n\n'
+    '"series": bool, "segment": string|null}]}\n\n'
     "Rules:\n"
     "- needs_financial_data is true ONLY if the question explicitly asks about "
     "reported figures, metrics, ratios, growth, or trends of a specific company.\n"
@@ -72,6 +73,8 @@ _SYSTEM = (
     "(the system resolves 'latest'). fiscal_quarter null also means full year.\n"
     '- series: true when a trend over multiple periods was asked ("over time", '
     '"last N quarters", "trend") — then leave the period fields null.\n'
+    "- segment: set ONLY when the user explicitly named a business segment "
+    '(e.g. "Widgets Pro revenue"); null otherwise.\n'
     "- Questions that are purely qualitative (why/how/risks/summaries) with no "
     "figure request => needs_financial_data: false."
 )
@@ -104,12 +107,16 @@ def parse_plan(text: str) -> QueryPlan | None:
             continue
         year = raw.get("fiscal_year")
         quarter = raw.get("fiscal_quarter")
+        segment = raw.get("segment")
         requests.append(
             PlannedRequest(
                 metric=metric,
                 fiscal_year=year if isinstance(year, int) else None,
                 fiscal_quarter=quarter if quarter in (1, 2, 3, 4) else None,
                 series=bool(raw.get("series")),
+                segment=segment.strip()
+                if isinstance(segment, str) and segment.strip()
+                else None,
             )
         )
     if not requests:

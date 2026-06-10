@@ -53,11 +53,59 @@ class MetricService:
         limit: int = 8,
     ) -> list[FinancialFact]:
         """Authoritative period series of a canonical line item, oldest first
-        (chart order). Ratio series are a 5c follow-up."""
+        (chart order)."""
         if chart_item(line_item) is None:
             raise MetricError(f"unknown line item: {line_item}")
         facts = await self.store.get_series(entity_id, line_item, basis, limit=limit)
         return list(reversed(facts))
+
+    async def ratio_series(
+        self,
+        entity_id: str,
+        metric: str,
+        basis: Basis = Basis.GAAP,
+        limit: int = 8,
+    ) -> list[MetricResult]:
+        """A registered ratio computed per period across the series (oldest
+        first). Periods missing either input are skipped, never interpolated."""
+        spec = RATIO_METRICS.get(metric)
+        if spec is None:
+            raise MetricError(f"unknown metric: {metric}")
+        numerator_item, denominator_item, _ = spec
+        numerators = await self.store.get_series(
+            entity_id, numerator_item, basis, limit=limit
+        )
+        denominators = await self.store.get_series(
+            entity_id, denominator_item, basis, limit=limit
+        )
+        by_period = {
+            (f.period.fiscal_year, f.period.quarter): f for f in denominators
+        }
+        results: list[MetricResult] = []
+        for numerator in reversed(numerators):  # oldest first
+            denominator = by_period.get(
+                (numerator.period.fiscal_year, numerator.period.quarter)
+            )
+            if denominator is None:
+                continue
+            try:
+                results.append(compute_ratio_metric(metric, numerator, denominator))
+            except MetricError:
+                continue  # e.g. zero denominator in one period
+        return results
+
+    async def basis_counterpart(
+        self,
+        entity_id: str,
+        line_item: str,
+        period: FiscalPeriod,
+        basis: Basis = Basis.GAAP,
+    ) -> FinancialFact | None:
+        """The same line item/period on the OTHER basis (GAAP ↔ non-GAAP) —
+        surfaces adjusted figures next to reported ones instead of silently
+        picking one."""
+        other = Basis.NON_GAAP if basis is Basis.GAAP else Basis.GAAP
+        return await self.store.get_fact(entity_id, line_item, period, other)
 
     async def lookup(
         self,
@@ -115,9 +163,11 @@ class MetricService:
         metric: str,
         period: FiscalPeriod,
         basis: Basis = Basis.GAAP,
+        segment: str | None = None,
     ) -> MetricResult | None:
         """One entrypoint for the API: a registered ratio ("gross_margin"), a
         YoY growth ("revenue_yoy"), or a direct line-item lookup ("revenue").
+        `segment` applies to direct lookups only (ratios are consolidated).
         Raises MetricError for names that are none of those; returns None when
         the metric is known but the underlying facts aren't in the store."""
         if metric in RATIO_METRICS:
@@ -126,11 +176,12 @@ class MetricService:
             return await self.growth_yoy(
                 entity_id, metric[: -len("_yoy")], period, basis
             )
-        fact = await self.lookup(entity_id, metric, period, basis)
+        fact = await self.lookup(entity_id, metric, period, basis, segment)
         if fact is None:
             return None
+        name = f"{metric} ({segment})" if segment else metric
         return MetricResult(
-            metric=metric,
+            metric=name,
             value=fact.value,
             unit=fact.unit,
             currency=fact.currency if fact.unit == "currency" else None,

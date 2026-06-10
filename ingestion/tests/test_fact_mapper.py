@@ -18,6 +18,7 @@ from ingestion.pipeline.facts import (
     detect_currency,
     detect_scale,
     detect_statement,
+    fiscal_period_for,
     map_document_tables,
     map_table,
     parse_numeric,
@@ -181,3 +182,83 @@ def test_table_without_period_headers_yields_nothing():
         rows=[["Item", "Amount"], ["Net sales", "94,930"]],
     )
     assert map_table(table, DOC) == []
+
+
+# ── fiscal calendars (5c) ────────────────────────────────────────────────────
+
+
+def test_fiscal_period_for_offset_fye():
+    # Apple-style September FYE: Dec quarter is Q1 of the NEXT fiscal year.
+    assert fiscal_period_for(date(2024, 12, 28), fye_month=9) == (2025, 1)
+    assert fiscal_period_for(date(2024, 9, 28), fye_month=9) == (2024, 4)
+    assert fiscal_period_for(date(2024, 3, 30), fye_month=9) == (2024, 2)
+    assert fiscal_period_for(date(2024, 6, 29), fye_month=9) == (2024, 3)
+    # Calendar default reproduces the old behavior exactly.
+    assert fiscal_period_for(date(2024, 9, 28), fye_month=12) == (2024, 3)
+    assert fiscal_period_for(date(2024, 12, 31), fye_month=12) == (2024, 4)
+
+
+def test_resolve_period_uses_entity_fiscal_calendar():
+    q = resolve_period("Three Months Ended December 28, 2024", fye_month=9)
+    assert q is not None and (q.fiscal_year, q.quarter) == (2025, 1)
+    fy = resolve_period("Year Ended September 28, 2024", fye_month=9)
+    assert fy is not None and (fy.fiscal_year, fy.quarter) == (2024, None)
+
+
+def test_map_table_threads_fye_month():
+    table = ParsedTable(
+        index=0, caption="(In millions)",
+        rows=[["", "Three Months Ended December 28, 2024"],
+              ["Net sales", "124,300"]],
+    )
+    (fact,) = map_table(table, DOC, fye_month=9)
+    assert fact.period.label == "Q1 FY2025"
+
+
+# ── segment revenue tables (5c, narrow) ──────────────────────────────────────
+
+SEGMENT_TABLE = ParsedTable(
+    index=0,
+    caption="Net sales by reportable segment (In millions)",
+    rows=[
+        ["", "Three Months Ended September 30, 2024"],
+        ["Widgets Pro", "61,700"],
+        ["Services", "33,230"],
+        ["Total net sales", "94,930"],
+    ],
+)
+
+
+def test_segment_table_rows_become_segment_revenue():
+    facts = map_table(SEGMENT_TABLE, DOC)
+    by_segment = {f.segment: f for f in facts}
+
+    assert by_segment["Widgets Pro"].line_item == "revenue"
+    assert by_segment["Widgets Pro"].value == Decimal("61700") * 1_000_000
+    assert by_segment["Services"].line_item == "revenue"
+    # The Total row is the consolidated figure — segment None.
+    assert by_segment[None].value == Decimal("94930") * 1_000_000
+    assert by_segment[None].line_item == "revenue"
+
+
+def test_non_segment_tables_unaffected():
+    facts = map_table(INCOME_TABLE, DOC)
+    assert all(f.segment is None for f in facts)
+
+
+# ── non-GAAP label normalization (5c) ────────────────────────────────────────
+
+
+def test_adjusted_labels_map_to_canonical_with_non_gaap_basis():
+    table = ParsedTable(
+        index=0, caption="(In millions)",
+        rows=[["", "Three Months Ended September 30, 2024"],
+              ["Adjusted operating income", "31,000"],
+              ["Operating income", "29,591"]],
+    )
+    facts = map_table(table, DOC)
+    by_basis = {f.basis: f for f in facts if f.line_item == "operating_income"}
+
+    assert by_basis[Basis.NON_GAAP].value == Decimal("31000") * 1_000_000
+    assert by_basis[Basis.NON_GAAP].line_item_as_reported == "Adjusted operating income"
+    assert by_basis[Basis.GAAP].value == Decimal("29591") * 1_000_000

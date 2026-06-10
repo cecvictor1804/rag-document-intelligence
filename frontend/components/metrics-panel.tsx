@@ -11,10 +11,11 @@ import { Button } from "@/components/ui/button";
 import {
   METRIC_GROUPS,
   fetchMetric,
+  fetchReview,
   formatAsReported,
   formatMetricValue,
 } from "@/lib/metrics";
-import type { MetricResponse } from "@/lib/types";
+import type { MetricResponse, ReviewIssue } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
 const FIELD =
@@ -26,9 +27,23 @@ export function MetricsPanel() {
   const [metric, setMetric] = React.useState("gross_margin");
   const [year, setYear] = React.useState(2024);
   const [quarter, setQuarter] = React.useState<string>("3");
+  const [currency, setCurrency] = React.useState("");
   const [loading, setLoading] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
   const [result, setResult] = React.useState<MetricResponse | null>(null);
+  const [issues, setIssues] = React.useState<ReviewIssue[] | null>(null);
+
+  // Data quality: open reconciliation issues, fetched when the panel opens.
+  React.useEffect(() => {
+    if (!open) return;
+    let cancelled = false;
+    fetchReview()
+      .then((list) => !cancelled && setIssues(list))
+      .catch(() => !cancelled && setIssues(null));
+    return () => {
+      cancelled = true;
+    };
+  }, [open]);
 
   async function run(e: React.FormEvent) {
     e.preventDefault();
@@ -42,6 +57,7 @@ export function MetricsPanel() {
           metric,
           fiscal_year: year,
           fiscal_quarter: quarter === "FY" ? null : Number(quarter),
+          currency: currency.trim() ? currency.trim().toUpperCase() : null,
         }),
       );
     } catch (err) {
@@ -138,6 +154,18 @@ export function MetricsPanel() {
               <option value="4">Q4</option>
             </select>
           </label>
+          <label className="col-span-2 text-sm">
+            <span className="mb-1 block text-xs font-medium text-muted-foreground">
+              Convert to currency (optional, e.g. EUR)
+            </span>
+            <input
+              className={FIELD}
+              value={currency}
+              onChange={(e) => setCurrency(e.target.value)}
+              placeholder="As reported"
+              maxLength={3}
+            />
+          </label>
           <Button type="submit" className="col-span-2" disabled={loading}>
             {loading ? <Loader2 className="size-4 animate-spin" /> : "Get figure"}
           </Button>
@@ -160,6 +188,24 @@ export function MetricsPanel() {
                   {formatMetricValue(result.value, result.unit, result.currency)}
                 </p>
                 <p className="mt-1 text-xs text-muted-foreground">= {result.formula}</p>
+                {result.converted && (
+                  <p className="mt-1 text-sm tabular-nums text-muted-foreground">
+                    ≈ {formatMetricValue(result.converted.value, "currency", result.converted.currency)}
+                    <span className="text-xs">
+                      {" "}@ {result.converted.rate}
+                      {result.converted.rate_date && ` (${result.converted.rate_date})`}
+                    </span>
+                  </p>
+                )}
+                {result.non_gaap_alternative && (
+                  <p className="mt-1 text-xs text-muted-foreground">
+                    {result.non_gaap_alternative.basis === "non_gaap" ? "Non-GAAP" : "GAAP"}{" "}
+                    counterpart: {result.non_gaap_alternative.label} ={" "}
+                    {formatMetricValue(
+                      result.non_gaap_alternative.value, result.unit, result.currency,
+                    )}
+                  </p>
+                )}
               </div>
 
               <div>
@@ -199,6 +245,33 @@ export function MetricsPanel() {
               traced to the exact table cell it came from — ingest a filing
               first with <code className="rounded bg-muted px-1">make ingest-financial</code>.
             </p>
+          )}
+
+          {issues && issues.length > 0 && (
+            <div className="mt-6 border-t pt-4">
+              <p className="mb-2 text-xs font-medium uppercase tracking-wide text-amber-600 dark:text-amber-400">
+                Data quality — {issues.length} flagged extraction
+                {issues.length === 1 ? "" : "s"}
+              </p>
+              <ul className="space-y-2">
+                {issues.map((issue) => (
+                  <li
+                    key={issue.id}
+                    className="rounded-lg border border-amber-500/30 bg-amber-500/5 p-3 text-xs"
+                  >
+                    <p className="font-medium">
+                      {issue.entity_id} · {issue.doc_id}
+                    </p>
+                    <p className="mt-0.5 text-muted-foreground">
+                      {issue.detail}
+                      {issue.expected && issue.actual && (
+                        <> — expected {issue.expected}, got {issue.actual}</>
+                      )}
+                    </p>
+                  </li>
+                ))}
+              </ul>
+            </div>
           )}
         </div>
       </aside>

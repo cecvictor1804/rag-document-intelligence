@@ -45,10 +45,14 @@ class FakeMetricService:
                  error: str | None = None) -> None:
         self.result, self.error = result, error
 
-    async def resolve(self, entity_id, metric, period, basis=Basis.GAAP):
+    async def resolve(self, entity_id, metric, period, basis=Basis.GAAP,
+                      segment=None):
         if self.error:
             raise MetricError(self.error)
         return self.result
+
+    async def basis_counterpart(self, *a, **k):
+        return None
 
 
 @pytest.fixture(autouse=True)
@@ -129,6 +133,99 @@ async def test_metric_service_resolve_returns_none_when_facts_missing():
     assert await service.resolve("ACME", "gross_margin", Q3_24) is None
     assert await service.resolve("ACME", "revenue", Q3_24) is None
     assert await service.resolve("ACME", "revenue_yoy", Q3_24) is None
+
+
+# ── 5c additions: FX conversion, non-GAAP counterpart, review queue ─────────
+
+
+class FakeFxStore:
+    async def get_fx_rate(self, base, quote, as_of=None):
+        assert (base, quote) == ("USD", "EUR")
+        from datetime import date
+
+        return (Decimal("0.92"), date(2024, 9, 27))
+
+
+class FxMetricService(FakeMetricService):
+    def __init__(self, result):
+        super().__init__(result)
+        self.store = FakeFxStore()
+
+
+def test_metrics_currency_conversion_is_annotated():
+    fact = revenue_fact()
+    result = MetricResult(
+        metric="revenue", value=fact.value, unit="currency", currency="USD",
+        period=Q3_24, formula="as reported", inputs=[fact],
+    )
+    app.dependency_overrides[deps.metric_service] = lambda: FxMetricService(result)
+    client = TestClient(app)
+
+    r = client.post("/metrics", json={
+        "entity": "ACME", "metric": "revenue", "fiscal_year": 2024,
+        "fiscal_quarter": 3, "currency": "EUR",
+    })
+
+    assert r.status_code == 200
+    body = r.json()
+    assert body["value"] == "94930000000"  # as-reported stays primary
+    converted = body["converted"]
+    assert converted["currency"] == "EUR"
+    assert converted["rate"] == "0.92"
+    assert converted["rate_date"] == "2024-09-27"
+    assert converted["value"] == str(Decimal("94930000000") * Decimal("0.92"))
+
+
+def test_metrics_non_gaap_counterpart_surfaces():
+    fact = revenue_fact()
+    fact.line_item = "operating_income"
+    result = MetricResult(
+        metric="operating_income", value=Decimal("29591000000"), unit="currency",
+        currency="USD", period=Q3_24, formula="as reported", inputs=[fact],
+    )
+
+    class WithCounterpart(FakeMetricService):
+        async def basis_counterpart(self, *a, **k):
+            other = revenue_fact()
+            other.line_item_as_reported = "Adjusted operating income"
+            other.value = Decimal("31000000000")
+            from app.core.finance import Basis as B
+
+            other.basis = B.NON_GAAP
+            return other
+
+    app.dependency_overrides[deps.metric_service] = lambda: WithCounterpart(result)
+    client = TestClient(app)
+    r = client.post("/metrics", json={
+        "entity": "ACME", "metric": "operating_income", "fiscal_year": 2024,
+        "fiscal_quarter": 3,
+    })
+
+    alt = r.json()["non_gaap_alternative"]
+    assert alt["basis"] == "non_gaap"
+    assert alt["value"] == "31000000000"
+    assert alt["label"] == "Adjusted operating income"
+
+
+def test_review_lists_open_issues():
+    class FakeReviewStore:
+        async def list_open_issues(self, limit=50):
+            return [{
+                "id": 1, "doc_id": "acme-10q", "entity_id": "ACME",
+                "check": "balance_identity",
+                "detail": "balance_identity mismatch in Q3 FY2024",
+                "expected": "364980000000", "actual": "348030000000",
+                "created_at": "2026-06-10T00:00:00",
+            }]
+
+    app.dependency_overrides[deps.metric_store] = lambda: FakeReviewStore()
+    client = TestClient(app)
+    r = client.get("/review")
+
+    assert r.status_code == 200
+    (issue,) = r.json()["issues"]
+    assert issue["check"] == "balance_identity"
+    assert issue["entity_id"] == "ACME"
 
 
 # ── Advice gate in the narrative path ────────────────────────────────────────

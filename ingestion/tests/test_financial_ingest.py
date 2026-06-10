@@ -26,8 +26,10 @@ class RecordingStore:
         self.entities: list[tuple[str, str]] = []
         self.documents: list[FinancialDocMeta] = []
         self.facts: list[FinancialFact] = []
+        self.issues: list = []
 
-    async def upsert_entity(self, entity_id, name, ticker=None, cik=None):
+    async def upsert_entity(self, entity_id, name, ticker=None, cik=None,
+                            fye_month=None):
         self.entities.append((entity_id, name))
 
     async def upsert_document(self, meta):
@@ -36,6 +38,9 @@ class RecordingStore:
     async def upsert_facts(self, facts):
         self.facts.extend(facts)
         return len(facts)
+
+    async def record_issues(self, issues):
+        self.issues.extend(issues)
 
     async def get_fact(self, *a, **k):  # pragma: no cover — protocol stub
         return None

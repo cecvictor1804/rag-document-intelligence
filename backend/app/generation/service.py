@@ -30,7 +30,7 @@ from app.core.finance import FinancialFact, FiscalPeriod, MetricResult
 from app.core.interfaces import LLMClient, QueryPlanner
 from app.core.models import AnswerEvent, AnswerEventType, Turn
 from app.finance.guardrails import ADVICE_REFUSAL, is_advice_request
-from app.finance.metrics import MetricError
+from app.finance.metrics import RATIO_METRICS, MetricError
 from app.finance.service import MetricService
 from app.finance.verify import extract_numbers, unverified_numbers
 from app.generation.query_log import QueryLog
@@ -111,6 +111,24 @@ class _NumericContext:
         rendered = "; ".join(f"{f.period.label} = {f.value}" for f in facts)
         self.lines.append(f"- {metric} series: {rendered}")
 
+    def add_ratio_series(self, metric: str, results: list[MetricResult]) -> None:
+        """A computed-per-period series (e.g. gross margin trend)."""
+        points = [
+            {"period": r.period.label, "value": float(r.value)} for r in results
+        ]
+        first = results[0]
+        self.series_payloads.append(
+            {"metric": metric, "unit": first.unit, "currency": first.currency,
+             "points": points}
+        )
+        for r in results:
+            self.allowed.append(r.value)
+            for fact in r.inputs:
+                self.allowed.extend([fact.value, fact.value_as_reported])
+        suffix = "%" if first.unit == "percent" else ""
+        rendered = "; ".join(f"{r.period.label} = {r.value}{suffix}" for r in results)
+        self.lines.append(f"- {metric} series: {rendered}")
+
     @property
     def active(self) -> bool:
         return bool(self.metric_payloads or self.series_payloads)
@@ -158,12 +176,18 @@ class AnswerService:
         for request in plan.requests[:_MAX_PLANNED_REQUESTS]:
             try:
                 if request.series:
-                    item = request.metric
+                    if request.metric in RATIO_METRICS:
+                        results = await self.metrics.ratio_series(
+                            plan.entity, request.metric, limit=_SERIES_LIMIT
+                        )
+                        if results:
+                            numeric.add_ratio_series(request.metric, results)
+                        continue
                     facts = await self.metrics.series(
-                        plan.entity, item, limit=_SERIES_LIMIT
+                        plan.entity, request.metric, limit=_SERIES_LIMIT
                     )
                     if facts:
-                        numeric.add_series(item, facts)
+                        numeric.add_series(request.metric, facts)
                     continue
                 if request.fiscal_year is not None:
                     period = FiscalPeriod(
@@ -177,7 +201,9 @@ class AnswerService:
                     if latest is None:
                         continue
                     period = latest
-                result = await self.metrics.resolve(plan.entity, request.metric, period)
+                result = await self.metrics.resolve(
+                    plan.entity, request.metric, period, segment=request.segment
+                )
                 if result is not None:
                     numeric.add_metric(result)
             except MetricError as exc:

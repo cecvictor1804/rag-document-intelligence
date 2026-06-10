@@ -21,6 +21,7 @@ from app.core.finance import (
     StatementType,
 )
 from app.db.pool import get_pool
+from app.finance.fx import cross_rate
 
 _FACT_COLUMNS = (
     "fact_id, entity_id, doc_id, statement, line_item, line_item_as_reported, "
@@ -62,20 +63,23 @@ def _row_to_fact(row: tuple[Any, ...]) -> FinancialFact:
 class PgMetricStore:
     async def upsert_entity(
         self, entity_id: str, name: str, ticker: str | None = None,
-        cik: str | None = None,
+        cik: str | None = None, fye_month: int | None = None,
     ) -> None:
         pool = await get_pool()
         async with pool.connection() as conn:
             await conn.execute(
                 """
-                INSERT INTO entities (entity_id, name, ticker, cik)
-                VALUES (%s, %s, %s, %s)
+                INSERT INTO entities (entity_id, name, ticker, cik,
+                                      fiscal_year_end_month)
+                VALUES (%s, %s, %s, %s, COALESCE(%s, 12))
                 ON CONFLICT (entity_id) DO UPDATE
                     SET name = EXCLUDED.name,
                         ticker = COALESCE(EXCLUDED.ticker, entities.ticker),
-                        cik = COALESCE(EXCLUDED.cik, entities.cik)
+                        cik = COALESCE(EXCLUDED.cik, entities.cik),
+                        fiscal_year_end_month = COALESCE(
+                            %s, entities.fiscal_year_end_month)
                 """,
-                (entity_id, name, ticker, cik),
+                (entity_id, name, ticker, cik, fye_month, fye_month),
             )
 
     async def upsert_document(self, meta: FinancialDocMeta) -> None:
@@ -191,3 +195,108 @@ class PgMetricStore:
             )
             rows = await cur.fetchall()
             return [_row_to_fact(r) for r in rows]
+
+    # ── Review queue ─────────────────────────────────────────────────────
+
+    async def record_issues(self, issues: Sequence[Any]) -> None:
+        if not issues:
+            return
+        pool = await get_pool()
+        async with pool.connection() as conn:
+            async with conn.cursor() as cur:
+                await cur.executemany(
+                    """
+                    INSERT INTO reconciliation_issues
+                        (doc_id, check_name, detail, expected, actual)
+                    VALUES (%s, %s, %s, %s, %s)
+                    ON CONFLICT (doc_id, check_name, detail) DO UPDATE
+                        SET expected = EXCLUDED.expected,
+                            actual = EXCLUDED.actual,
+                            resolved = false
+                    """,
+                    [(i.doc_id, i.check, i.detail, i.expected, i.actual)
+                     for i in issues],
+                )
+
+    async def list_open_issues(self, limit: int = 50) -> list[dict[str, Any]]:
+        pool = await get_pool()
+        async with pool.connection() as conn:
+            cur = await conn.execute(
+                """
+                SELECT i.id, i.doc_id, d.entity_id, i.check_name, i.detail,
+                       i.expected, i.actual, i.created_at
+                FROM reconciliation_issues i
+                JOIN financial_documents d USING (doc_id)
+                WHERE NOT i.resolved
+                ORDER BY i.created_at DESC
+                LIMIT %s
+                """,
+                (limit,),
+            )
+            rows = await cur.fetchall()
+        return [
+            {
+                "id": r[0], "doc_id": r[1], "entity_id": r[2], "check": r[3],
+                "detail": r[4],
+                "expected": str(r[5]) if r[5] is not None else None,
+                "actual": str(r[6]) if r[6] is not None else None,
+                "created_at": r[7].isoformat(),
+            }
+            for r in rows
+        ]
+
+    # ── FX rates ─────────────────────────────────────────────────────────
+
+    async def upsert_fx_rates(
+        self, rows: Sequence[tuple[Any, str, str, Any]]
+    ) -> int:
+        if not rows:
+            return 0
+        pool = await get_pool()
+        async with pool.connection() as conn:
+            async with conn.cursor() as cur:
+                await cur.executemany(
+                    """
+                    INSERT INTO fx_rates (rate_date, base_currency,
+                                          quote_currency, rate)
+                    VALUES (%s, %s, %s, %s)
+                    ON CONFLICT (rate_date, base_currency, quote_currency)
+                    DO UPDATE SET rate = EXCLUDED.rate
+                    """,
+                    list(rows),
+                )
+        return len(rows)
+
+    async def _eur_rate(
+        self, conn: Any, currency: str, as_of: Any | None
+    ) -> tuple[Decimal, Any] | None:
+        """EUR→currency at the nearest date ≤ as_of (latest when None)."""
+        if currency == "EUR":
+            return Decimal(1), as_of
+        cur = await conn.execute(
+            """
+            SELECT rate, rate_date FROM fx_rates
+            WHERE base_currency = 'EUR' AND quote_currency = %s
+              AND (%s::date IS NULL OR rate_date <= %s)
+            ORDER BY rate_date DESC LIMIT 1
+            """,
+            (currency, as_of, as_of),
+        )
+        row = await cur.fetchone()
+        return (Decimal(row[0]), row[1]) if row else None
+
+    async def get_fx_rate(
+        self, base: str, quote: str, as_of: Any | None = None
+    ) -> tuple[Any, Any] | None:
+        if base == quote:
+            return (Decimal(1), as_of)
+        pool = await get_pool()
+        async with pool.connection() as conn:
+            eur_base = await self._eur_rate(conn, base, as_of)
+            eur_quote = await self._eur_rate(conn, quote, as_of)
+        if eur_base is None or eur_quote is None or eur_base[0] == 0:
+            return None
+        # date = the older of the two underlying reference dates.
+        rate = cross_rate(eur_base[0], eur_quote[0])
+        dates = [d for d in (eur_base[1], eur_quote[1]) if d is not None]
+        return (rate, min(dates) if dates else None)

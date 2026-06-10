@@ -75,7 +75,29 @@ export type MetricResponse = {
   period: string;
   formula: string;
   inputs: FactProvenance[];
+  converted: {
+    currency: string;
+    value: string;
+    rate: string;
+    rate_date: string | null;
+  } | null;
+  non_gaap_alternative: {
+    basis: string;
+    value: string;
+    label: string;
+  } | null;
   disclaimer: string;
+};
+
+export type ReviewIssue = {
+  id: number;
+  doc_id: string;
+  entity_id: string;
+  check: string;
+  detail: string;
+  expected: string | null;
+  actual: string | null;
+  created_at: string;
 };
 
 export type Role = "user" | "assistant";

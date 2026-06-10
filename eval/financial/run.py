@@ -38,7 +38,8 @@ class InMemoryMetricStore:
     facts: list[FinancialFact] = field(default_factory=list)
     documents: list[FinancialDocMeta] = field(default_factory=list)
 
-    async def upsert_entity(self, entity_id, name, ticker=None, cik=None):
+    async def upsert_entity(self, entity_id, name, ticker=None, cik=None,
+                            fye_month=None):
         pass
 
     async def upsert_document(self, meta: FinancialDocMeta) -> None:
@@ -47,6 +48,18 @@ class InMemoryMetricStore:
     async def upsert_facts(self, facts) -> int:
         self.facts.extend(facts)
         return len(facts)
+
+    async def record_issues(self, issues) -> None:
+        pass
+
+    async def list_open_issues(self, limit: int = 50):
+        return []
+
+    async def upsert_fx_rates(self, rows) -> int:
+        return 0
+
+    async def get_fx_rate(self, base, quote, as_of=None):
+        return None
 
     def _match(self, f: FinancialFact, entity_id, line_item, basis, segment) -> bool:
         return (

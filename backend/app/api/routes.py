@@ -22,6 +22,8 @@ from sse_starlette.sse import EventSourceResponse
 
 from app import deps
 from app.api.schemas import (
+    BasisAlternative,
+    ConvertedValue,
     FactProvenance,
     FeedbackRequest,
     FeedbackResponse,
@@ -29,12 +31,16 @@ from app.api.schemas import (
     MetricRequest,
     MetricResponse,
     QueryRequest,
+    ReviewIssue,
+    ReviewResponse,
 )
 from app.auth import Principal, require_user
 from app.core.finance import Basis, FinancialFact, FiscalPeriod
+from app.core.interfaces import MetricStore
 from app.core.models import AnswerEvent, AnswerEventType
 from app.db.pool import get_pool
 from app.feedback import Feedback
+from app.finance.fx import convert
 from app.finance.guardrails import DISCLAIMER
 from app.finance.metrics import MetricError
 from app.finance.service import MetricService
@@ -111,11 +117,12 @@ async def metrics(
     user: Annotated[Principal, Depends(require_user)],
 ) -> MetricResponse:
     """Deterministic figure lookup/computation — no LLM in this path. Every
-    value carries the exact source cells it came from."""
+    value carries the exact source cells it came from; FX conversion and the
+    non-GAAP counterpart are annotated extras, never silent substitutions."""
     period = FiscalPeriod(fiscal_year=req.fiscal_year, quarter=req.fiscal_quarter)
     try:
         result = await service.resolve(
-            req.entity, req.metric, period, Basis(req.basis)
+            req.entity, req.metric, period, Basis(req.basis), segment=req.segment
         )
     except MetricError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
@@ -125,6 +132,40 @@ async def metrics(
             detail=f"No authoritative facts for {req.metric} "
             f"({req.entity}, {period.label})",
         )
+
+    converted: ConvertedValue | None = None
+    if (
+        req.currency
+        and result.unit == "currency"
+        and result.currency
+        and req.currency.upper() != result.currency
+    ):
+        as_of = result.period.end_date
+        fx = await service.store.get_fx_rate(
+            result.currency, req.currency.upper(), as_of
+        )
+        if fx is not None:
+            rate, rate_date = fx
+            converted = ConvertedValue(
+                currency=req.currency.upper(),
+                value=str(convert(result.value, rate)),
+                rate=str(rate),
+                rate_date=rate_date.isoformat() if rate_date else None,
+            )
+
+    alternative: BasisAlternative | None = None
+    counterpart_item = result.inputs[0].line_item if len(result.inputs) == 1 else None
+    if counterpart_item:
+        other = await service.basis_counterpart(
+            req.entity, counterpart_item, result.period, Basis(req.basis)
+        )
+        if other is not None:
+            alternative = BasisAlternative(
+                basis=other.basis.value,
+                value=str(other.value),
+                label=other.line_item_as_reported,
+            )
+
     return MetricResponse(
         metric=result.metric,
         value=str(result.value),
@@ -133,8 +174,20 @@ async def metrics(
         period=result.period.label,
         formula=result.formula,
         inputs=[_provenance(f) for f in result.inputs],
+        converted=converted,
+        non_gaap_alternative=alternative,
         disclaimer=DISCLAIMER,
     )
+
+
+@router.get("/review", response_model=ReviewResponse)
+async def review(
+    store: Annotated[MetricStore, Depends(deps.metric_store)],
+    user: Annotated[Principal, Depends(require_user)],
+) -> ReviewResponse:
+    """Open reconciliation issues — extractions a human should look at."""
+    issues = await store.list_open_issues(limit=50)
+    return ReviewResponse(issues=[ReviewIssue(**i) for i in issues])
 
 
 async def db_ready() -> bool:

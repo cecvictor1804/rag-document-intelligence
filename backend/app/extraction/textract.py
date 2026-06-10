@@ -119,10 +119,27 @@ def parse_blocks(ref: DocRef, blocks: list[dict[str, Any]]) -> ParsedFinancialDo
 class TextractParser:
     name = "textract"
 
-    def __init__(self, region: str, client: Any | None = None) -> None:
-        """`client` is injectable for tests; lazily built from boto3 otherwise."""
+    def __init__(
+        self,
+        region: str,
+        client: Any | None = None,
+        s3_client: Any | None = None,
+        async_bucket: str = "",
+        max_pages: int = 50,
+        poll_interval: float = 2.0,
+        max_wait: float = 600.0,
+    ) -> None:
+        """`client`/`s3_client` are injectable for tests; lazily built from
+        boto3 otherwise. With `async_bucket` set, parsing uses the S3-based
+        async API (multi-page PDFs); otherwise sync inline bytes (single-page).
+        `max_pages` is a cost flag: documents over it are logged loudly."""
         self._region = region
         self._client = client
+        self._s3 = s3_client
+        self.async_bucket = async_bucket
+        self.max_pages = max_pages
+        self.poll_interval = poll_interval
+        self.max_wait = max_wait
 
     def _get_client(self) -> Any:
         if self._client is None:
@@ -131,16 +148,92 @@ class TextractParser:
             self._client = boto3.client("textract", region_name=self._region)
         return self._client
 
+    def _get_s3(self) -> Any:
+        if self._s3 is None:
+            import boto3
+
+            self._s3 = boto3.client("s3", region_name=self._region)
+        return self._s3
+
     async def parse(self, ref: DocRef, content: bytes) -> ParsedFinancialDoc:
         if ref.filetype not in _SUPPORTED:
             raise ValueError(
                 f"TextractParser handles {sorted(_SUPPORTED)} documents, "
                 f"not '{ref.filetype}' (use the html parser for HTML filings)."
             )
+        if self.async_bucket:
+            blocks = await self._analyze_async(ref, content)
+        else:
+            client = self._get_client()
+            response = await asyncio.to_thread(
+                client.analyze_document,
+                Document={"Bytes": content},
+                FeatureTypes=["TABLES"],
+            )
+            blocks = response["Blocks"]
+        return parse_blocks(ref, blocks)
+
+    async def _analyze_async(self, ref: DocRef, content: bytes) -> list[dict[str, Any]]:
+        """S3-based StartDocumentAnalysis for multi-page documents: upload →
+        start → poll (backoff) → aggregate every NextToken page → clean up."""
+        import logging
+        import uuid
+
+        logger = logging.getLogger("rag.textract")
         client = self._get_client()
-        response = await asyncio.to_thread(
-            client.analyze_document,
-            Document={"Bytes": content},
-            FeatureTypes=["TABLES"],
+        s3 = self._get_s3()
+        key = f"textract-tmp/{uuid.uuid4()}.{ref.filetype}"
+
+        await asyncio.to_thread(
+            s3.put_object, Bucket=self.async_bucket, Key=key, Body=content
         )
-        return parse_blocks(ref, response["Blocks"])
+        try:
+            start = await asyncio.to_thread(
+                client.start_document_analysis,
+                DocumentLocation={
+                    "S3Object": {"Bucket": self.async_bucket, "Name": key}
+                },
+                FeatureTypes=["TABLES"],
+            )
+            job_id = start["JobId"]
+
+            waited = 0.0
+            while True:
+                response = await asyncio.to_thread(
+                    client.get_document_analysis, JobId=job_id
+                )
+                status = response["JobStatus"]
+                if status == "SUCCEEDED":
+                    break
+                if status == "FAILED":
+                    raise RuntimeError(
+                        f"Textract job failed: {response.get('StatusMessage', '')}"
+                    )
+                if waited >= self.max_wait:
+                    raise TimeoutError(f"Textract job {job_id} exceeded max wait")
+                await asyncio.sleep(self.poll_interval)
+                waited += self.poll_interval
+
+            pages = response.get("DocumentMetadata", {}).get("Pages", 0)
+            if pages > self.max_pages:
+                logger.warning(
+                    "textract: %s is %d pages (cap %d) — per-page cost flag",
+                    ref.doc_id, pages, self.max_pages,
+                )
+
+            blocks: list[dict[str, Any]] = list(response.get("Blocks", []))
+            token = response.get("NextToken")
+            while token:
+                page = await asyncio.to_thread(
+                    client.get_document_analysis, JobId=job_id, NextToken=token
+                )
+                blocks.extend(page.get("Blocks", []))
+                token = page.get("NextToken")
+            return blocks
+        finally:
+            try:
+                await asyncio.to_thread(
+                    s3.delete_object, Bucket=self.async_bucket, Key=key
+                )
+            except Exception:  # noqa: BLE001 — cleanup must not mask the result
+                logger.warning("textract: temp object cleanup failed for %s", key)

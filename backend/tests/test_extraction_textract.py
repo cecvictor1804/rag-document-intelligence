@@ -116,3 +116,79 @@ async def test_html_filetype_is_rejected():
     parser = TextractParser(region="us-east-1", client=object())
     with pytest.raises(ValueError, match="html parser"):
         await parser.parse(ref("html"), b"<html/>")
+
+
+# ── async (multi-page) path ──────────────────────────────────────────────────
+
+
+class FakeAsyncTextract:
+    """start → IN_PROGRESS → SUCCEEDED with two NextToken pages."""
+
+    def __init__(self) -> None:
+        self.calls: list[str] = []
+
+    def start_document_analysis(self, **kwargs: Any) -> dict[str, Any]:
+        self.calls.append("start")
+        assert kwargs["DocumentLocation"]["S3Object"]["Bucket"] == "extract-bkt"
+        return {"JobId": "job-1"}
+
+    def get_document_analysis(self, **kwargs: Any) -> dict[str, Any]:
+        if "NextToken" in kwargs:
+            self.calls.append("page2")
+            return {"JobStatus": "SUCCEEDED", "Blocks": BLOCKS[8:]}
+        self.calls.append("poll")
+        if self.calls.count("poll") == 1:
+            return {"JobStatus": "IN_PROGRESS"}
+        return {
+            "JobStatus": "SUCCEEDED",
+            "DocumentMetadata": {"Pages": 3},
+            "Blocks": BLOCKS[:8],
+            "NextToken": "tok-2",
+        }
+
+
+class FakeS3:
+    def __init__(self) -> None:
+        self.puts: list[str] = []
+        self.deletes: list[str] = []
+
+    def put_object(self, Bucket: str, Key: str, Body: bytes) -> None:  # noqa: N803
+        self.puts.append(Key)
+
+    def delete_object(self, Bucket: str, Key: str) -> None:  # noqa: N803
+        self.deletes.append(Key)
+
+
+async def test_async_path_uploads_polls_paginates_and_cleans_up():
+    textract, s3 = FakeAsyncTextract(), FakeS3()
+    parser = TextractParser(
+        region="us-east-1", client=textract, s3_client=s3,
+        async_bucket="extract-bkt", poll_interval=0.001,
+    )
+    doc = await parser.parse(ref(), b"%PDF-1.7 multipage")
+
+    # Polled past IN_PROGRESS, then fetched the NextToken page.
+    assert textract.calls == ["start", "poll", "poll", "page2"]
+    # Blocks from both pages were aggregated into one parse.
+    assert len(doc.tables) == 1
+    assert doc.tables[0].rows[1] == ["Net sales", "$ 94,930"]
+    # Temp S3 object created and removed.
+    assert s3.puts == s3.deletes and len(s3.puts) == 1
+
+
+async def test_async_failure_raises_and_still_cleans_up():
+    class FailingTextract:
+        def start_document_analysis(self, **kwargs: Any) -> dict[str, Any]:
+            return {"JobId": "job-2"}
+
+        def get_document_analysis(self, **kwargs: Any) -> dict[str, Any]:
+            return {"JobStatus": "FAILED", "StatusMessage": "bad pdf"}
+
+    s3 = FakeS3()
+    parser = TextractParser(
+        region="us-east-1", client=FailingTextract(), s3_client=s3,
+        async_bucket="extract-bkt", poll_interval=0.001,
+    )
+    with pytest.raises(RuntimeError, match="bad pdf"):
+        await parser.parse(ref(), b"%PDF-1.7")
+    assert len(s3.deletes) == 1  # cleanup ran despite the failure

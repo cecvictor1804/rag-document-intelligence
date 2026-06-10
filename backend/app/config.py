@@ -88,6 +88,13 @@ class Settings(BaseSettings):
     # NL→query planner: lets the chat answer with verified figures from the
     # metric store. Off => pure narrative RAG (5a behavior).
     planner_enabled: bool = True
+    # Async (multi-page) Textract: S3 bucket for temporary uploads. Empty =
+    # sync inline-bytes only (single-page docs).
+    textract_async_bucket: str = ""
+    # Flag documents whose page count exceeds this (per-page extraction cost).
+    textract_max_pages: int = 50
+    # Concurrent financial extractions in the SQS worker.
+    worker_concurrency: int = 4
     # SEC EDGAR requires a descriptive User-Agent with contact info, e.g.
     # "Acme Internal RAG admin@acme.com". Empty disables the EDGAR feed.
     edgar_user_agent: str = ""

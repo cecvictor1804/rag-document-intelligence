@@ -99,11 +99,19 @@ export function formatAsReported(value: string, scale: number): string {
   return base;
 }
 
+export async function fetchReview(): Promise<import("./types").ReviewIssue[]> {
+  const res = await fetch("/api/review");
+  if (!res.ok) throw new Error(`Review fetch failed (${res.status})`);
+  const body = (await res.json()) as { issues: import("./types").ReviewIssue[] };
+  return body.issues;
+}
+
 export async function fetchMetric(input: {
   entity: string;
   metric: string;
   fiscal_year: number;
   fiscal_quarter: number | null;
+  currency?: string | null;
 }): Promise<MetricResponse> {
   const res = await fetch("/api/metrics", {
     method: "POST",

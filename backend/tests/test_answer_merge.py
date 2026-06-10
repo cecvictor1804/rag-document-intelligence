@@ -45,6 +45,7 @@ class SeededStore:
             fact("revenue", "94930000000", Q3_24),
             fact("revenue", "89498000000", Q3_23),
             fact("gross_profit", "43879000000", Q3_24),
+            fact("gross_profit", "40427000000", Q3_23),
         ]
 
     async def upsert_entity(self, *a, **k): ...
@@ -126,6 +127,54 @@ async def test_series_event_for_trend_questions():
     assert series.data["metric"] == "revenue"
     assert [p["period"] for p in series.data["points"]] == ["Q3 FY2023", "Q3 FY2024"]
     assert series.data["points"][1]["value"] == 94930000000.0
+
+
+async def test_ratio_series_for_margin_trends():
+    plan = QueryPlan("ACME", [PlannedRequest("gross_margin", series=True)])
+    events = await collect(service(plan), "Gross margin trend?")
+
+    series = next(e for e in events if e.type is AnswerEventType.SERIES)
+    assert series.data["metric"] == "gross_margin"
+    assert series.data["unit"] == "percent"
+    points = series.data["points"]
+    assert [p["period"] for p in points] == ["Q3 FY2023", "Q3 FY2024"]
+    expected = float(
+        (Decimal("43879000000") / Decimal("94930000000") * 100).quantize(
+            Decimal("0.001")
+        )
+    )
+    assert points[1]["value"] == expected
+
+
+async def test_segment_request_passed_to_lookup():
+    class SegmentStore(SeededStore):
+        def __init__(self) -> None:
+            super().__init__()
+            segment_fact = fact("revenue", "61700000000", Q3_24)
+            segment_fact.segment = "Widgets Pro"
+            self.facts.append(segment_fact)
+
+        async def get_fact(self, entity_id, line_item, period,
+                           basis=Basis.GAAP, segment=None):
+            for f in self.facts:
+                if (f.line_item == line_item and f.segment == segment
+                        and f.period.fiscal_year == period.fiscal_year
+                        and f.period.quarter == period.quarter):
+                    return f
+            return None
+
+    plan = QueryPlan(
+        "ACME", [PlannedRequest("revenue", 2024, 3, segment="Widgets Pro")]
+    )
+    svc = AnswerService(
+        FakeRetrieval([rr(make_chunk(), 0.9)]), FakeLLM(), settings(), None,
+        planner=FakePlanner(plan), metrics=MetricService(SegmentStore()),
+    )
+    events = await collect(svc, "Widgets Pro revenue in Q3 FY2024?")
+    (metric,) = events[0].data
+    assert metric["metric"] == "revenue (Widgets Pro)"
+    assert metric["value"] == "61700000000"
+    assert metric["inputs"][0]["segment"] == "Widgets Pro"
 
 
 async def test_latest_period_resolved_when_no_period_stated():

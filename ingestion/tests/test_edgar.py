@@ -15,6 +15,7 @@ from ingestion.pipeline.edgar import (
     ARCHIVE_URL,
     SUBMISSIONS_URL,
     EdgarClient,
+    fiscal_year_end_month,
     recent_filings,
     sync_entity,
 )
@@ -24,6 +25,7 @@ SAMPLE = Path(__file__).resolve().parents[2] / "sample_docs" / "acme_corp_10q_q3
 
 SUBMISSIONS = {
     "name": "Acme Corp",
+    "fiscalYearEnd": "0928",  # September FYE (Apple-style)
     "filings": {
         "recent": {
             # Mixed forms: only 10-K/10-Q(/A) should be selected, order kept.
@@ -59,14 +61,27 @@ def test_client_requires_user_agent():
         EdgarClient("")
 
 
+def test_fiscal_year_end_month_parsing():
+    assert fiscal_year_end_month(SUBMISSIONS) == 9
+    assert fiscal_year_end_month({"fiscalYearEnd": "1231"}) == 12
+    assert fiscal_year_end_month({"fiscalYearEnd": "garbage"}) == 12
+    assert fiscal_year_end_month({}) == 12  # absent → calendar
+
+
 class RecordingStore:
     def __init__(self) -> None:
         self.entities: list[tuple] = []
         self.documents: list = []
         self.facts: list = []
+        self.fye_months: list[int | None] = []
 
-    async def upsert_entity(self, entity_id, name, ticker=None, cik=None):
+    async def upsert_entity(self, entity_id, name, ticker=None, cik=None,
+                            fye_month=None):
         self.entities.append((entity_id, name))
+        self.fye_months.append(fye_month)
+
+    async def record_issues(self, issues):
+        pass
 
     async def upsert_document(self, meta):
         self.documents.append(meta)
@@ -110,6 +125,10 @@ async def test_sync_entity_downloads_ingests_and_caches(tmp_path):
     assert store.documents[1].doc_type == "10-K/A"
     assert store.documents[1].authority is SourceAuthority.AMENDMENT
     assert store.entities[0] == ("ACME", "Acme Corp")  # name from submissions
+    assert store.fye_months[0] == 9  # fiscalYearEnd auto-detected
+
+    # FYE September relabels the sample's Sep-30 periods: Q3→Q4 calendar shift.
+    assert any(f.period.label == "Q4 FY2024" for f in store.facts)
 
     # Download URL shape (accession without dashes) and local cache.
     expected_url = ARCHIVE_URL.format(

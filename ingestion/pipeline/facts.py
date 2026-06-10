@@ -87,6 +87,7 @@ _STATEMENTS: tuple[tuple[re.Pattern[str], StatementType], ...] = (
 )
 
 _NON_GAAP_RE = re.compile(r"non-?gaap|adjusted", re.I)
+_NON_GAAP_PREFIX_RE = re.compile(r"^\s*(adjusted|non-?gaap)\s+", re.I)
 
 
 def detect_scale(caption: str) -> int:
@@ -131,9 +132,22 @@ _QUARTER_RE = re.compile(r"\bQ([1-4])\b|three\s+months|quarter\s+ended", re.I)
 _FY_LABEL_RE = re.compile(r"(?:fy|fiscal\s+year)\s*(\d{4})|^(\d{4})$", re.I)
 
 
-def resolve_period(header: str) -> FiscalPeriod | None:
+def fiscal_period_for(end: date, fye_month: int) -> tuple[int, int]:
+    """(fiscal_year, quarter) for a period ending at `end`, given the month
+    the entity's fiscal year ends. fye_month=12 == calendar alignment.
+
+    e.g. Apple (FYE September): a period ending Dec 2024 is Q1 FY2025;
+    ending Sep 2024 is Q4 FY2024.
+    """
+    fiscal_year = end.year if end.month <= fye_month else end.year + 1
+    quarter = ((end.month - fye_month - 1) % 12) // 3 + 1
+    return fiscal_year, quarter
+
+
+def resolve_period(header: str, fye_month: int = 12) -> FiscalPeriod | None:
     """Fiscal period from a column header. None when no period is present
-    (e.g. a '% change' column) — such columns are skipped, never guessed."""
+    (e.g. a '% change' column) — such columns are skipped, never guessed.
+    `fye_month` is the entity's fiscal-year-end month (12 = calendar)."""
     header = header.strip()
     if not header:
         return None
@@ -145,10 +159,10 @@ def resolve_period(header: str) -> FiscalPeriod | None:
     if m:
         month = _MONTHS[m.group(1).lower().rstrip(".")]
         end = date(int(m.group(3)), month, min(int(m.group(2)), 28))
+        fiscal_year, quarter = fiscal_period_for(end, fye_month)
         if annual and not quarterly:
-            return FiscalPeriod(fiscal_year=end.year, quarter=None, end_date=end)
-        quarter = (month - 1) // 3 + 1  # calendar-aligned (v1 simplification)
-        return FiscalPeriod(fiscal_year=end.year, quarter=quarter, end_date=end)
+            return FiscalPeriod(fiscal_year=fiscal_year, quarter=None, end_date=end)
+        return FiscalPeriod(fiscal_year=fiscal_year, quarter=quarter, end_date=end)
 
     if quarterly and quarterly.group(1):
         year_m = re.search(r"(\d{4})", header)
@@ -166,29 +180,43 @@ def resolve_period(header: str) -> FiscalPeriod | None:
 
 # ── Table → facts ────────────────────────────────────────────────────────────
 
-def _header_row(table: ParsedTable) -> tuple[int, list[FiscalPeriod | None]] | None:
+def _header_row(
+    table: ParsedTable, fye_month: int = 12
+) -> tuple[int, list[FiscalPeriod | None]] | None:
     """Find the first row whose cells resolve to at least one period; return
     (row_index, per-column periods)."""
     for r, row in enumerate(table.rows[:4]):  # headers live near the top
-        periods = [resolve_period(cell) for cell in row]
+        periods = [resolve_period(cell, fye_month) for cell in row]
         if sum(p is not None for p in periods) >= 1:
             return r, periods
     return None
+
+
+# Segment-revenue tables (narrow, conservative): captions like "Net sales by
+# reportable segment". Rows become revenue facts tagged with their segment.
+_SEGMENT_REVENUE_RE = re.compile(
+    r"(net\s+sales|revenue).{0,40}segment|segment.{0,40}(net\s+sales|revenue)", re.I
+)
+
+# Total rows in a segment table are the consolidated figure, not a segment.
+_TOTAL_ROW_RE = re.compile(r"^total\b", re.I)
 
 
 def map_table(
     table: ParsedTable,
     doc: FinancialDocMeta,
     default_scale: int | None = None,
+    fye_month: int = 12,
 ) -> list[FinancialFact]:
     """Map one parsed table to normalized facts.
 
     Column 0 is the line-item label; the header row assigns a FiscalPeriod to
     each remaining column (period-less columns like '% change' are skipped).
     Rows whose label maps to nothing canonical still produce facts — the
-    as-reported label is the identity of last resort.
+    as-reported label is the identity of last resort. In segment-revenue
+    tables, rows become `revenue` facts tagged with their segment.
     """
-    header = _header_row(table)
+    header = _header_row(table, fye_month)
     if header is None:
         return []
     header_idx, periods = header
@@ -199,6 +227,7 @@ def map_table(
     currency = detect_currency(table.caption)
     statement = detect_statement(table.caption)
     table_basis = detect_basis(table.caption)
+    segment_table = bool(_SEGMENT_REVENUE_RE.search(table.caption))
 
     facts: list[FinancialFact] = []
     for r in range(header_idx + 1, len(table.rows)):
@@ -208,7 +237,18 @@ def map_table(
         label = row[0].strip()
         if not normalize_label(label):
             continue
-        item = map_line_item(label)
+
+        segment: str | None = None
+        if segment_table and not _TOTAL_ROW_RE.match(label):
+            # Row label is the segment; the figure is segment revenue.
+            segment = label
+            item = map_line_item("revenue")
+        else:
+            item = map_line_item(label)
+            if item is None and detect_basis(label) is Basis.NON_GAAP:
+                # "Adjusted operating income" → canonical operating_income
+                # with basis=non_gaap, so GAAP/non-GAAP pairs stay comparable.
+                item = map_line_item(_NON_GAAP_PREFIX_RE.sub("", label))
         unit = item.unit if item else "currency"
         # Per-share figures are printed unscaled even in "(in millions)" tables.
         row_scale = 1 if unit == "per_share" else scale
@@ -239,6 +279,7 @@ def map_table(
                     currency=currency,
                     unit=unit,
                     basis=row_basis,
+                    segment=segment,
                     authority=doc.authority,
                     cell=CellRef(table_index=table.index, row=r, col=c, page=table.page),
                 )
@@ -247,7 +288,7 @@ def map_table(
 
 
 def map_document_tables(
-    tables: list[ParsedTable], doc: FinancialDocMeta
+    tables: list[ParsedTable], doc: FinancialDocMeta, fye_month: int = 12
 ) -> list[FinancialFact]:
     """Map every table in a document. A scale declared by an earlier table's
     caption carries forward as the default for captionless continuation tables."""
@@ -257,5 +298,7 @@ def map_document_tables(
         scale = detect_scale(table.caption)
         if scale != 1:
             carried_scale = scale
-        facts.extend(map_table(table, doc, default_scale=carried_scale))
+        facts.extend(
+            map_table(table, doc, default_scale=carried_scale, fye_month=fye_month)
+        )
     return facts

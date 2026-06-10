@@ -33,6 +33,9 @@ ingest-financial:  ## Extract facts: make ingest-financial ENTITY=ACME FILES="sa
 edgar-sync:        ## Pull recent SEC filings: make edgar-sync ENTITY=AAPL CIK=320193
 	$(PYTHON) -m ingestion.pipeline.edgar_sync --entity "$(ENTITY)" --cik "$(CIK)"
 
+fx-load:           ## Load ECB reference FX rates (last ~90 days)
+	$(PYTHON) -m ingestion.pipeline.fx_load
+
 query:             ## Run a one-shot query: make query Q="how do I reset my password?"
 	curl -N -s -X POST localhost:8000/query -H 'content-type: application/json' \
 		-d '{"query": "$(Q)"}'

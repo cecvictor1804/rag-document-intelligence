@@ -121,6 +121,17 @@ def _filetype(doc_name: str) -> str:
     return "html" if ext in {"htm", "html"} else ext
 
 
+def fiscal_year_end_month(submissions: dict[str, Any]) -> int:
+    """The entity's fiscal-year-end month from EDGAR's "MMDD" field
+    (e.g. "0928" → 9). Calendar (12) when absent/malformed."""
+    raw = submissions.get("fiscalYearEnd") or ""
+    try:
+        month = int(str(raw)[:2])
+    except ValueError:
+        return 12
+    return month if 1 <= month <= 12 else 12
+
+
 async def sync_entity(
     client: EdgarClient,
     ingestor: FinancialIngestor,
@@ -137,8 +148,12 @@ async def sync_entity(
     """
     submissions = await client.submissions(cik)
     name = entity_name or submissions.get("name") or entity_id
+    fye_month = fiscal_year_end_month(submissions)  # offset-FYE auto-detect
     filings = recent_filings(submissions, limit=limit)
-    logger.info("edgar: %s (CIK %d): %d filing(s) to ingest", entity_id, cik, len(filings))
+    logger.info(
+        "edgar: %s (CIK %d): %d filing(s) to ingest (FYE month %d)",
+        entity_id, cik, len(filings), fye_month,
+    )
 
     summaries: list[FinancialIngestSummary] = []
     for filing in filings:
@@ -164,6 +179,7 @@ async def sync_entity(
             name,
             doc_type=filing.form,
             filed_date=filing.filed,
+            fye_month=fye_month,
         )
         summaries.append(summary)
     return summaries
