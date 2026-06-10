@@ -1,0 +1,74 @@
+# CI: the same gate as local development — backend tests/lint/types, the
+# offline financial eval (ground-truth figures, no API keys needed), the
+# frontend suite + production build, and Terraform validation.
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  backend:
+    runs-on: ubuntu-latest
+    env:
+      # Same fallback as documented in the README: the import roots work
+      # without packaging, so a packaging hiccup can't take CI down.
+      PYTHONPATH: backend:.
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install
+        run: pip install -e ".[dev,openai]"
+      - name: Lint (ruff)
+        run: ruff check .
+      - name: Types (mypy)
+        run: mypy backend/app ingestion
+      - name: Tests (pytest)
+        run: pytest -q
+      - name: Financial eval (offline ground truth)
+        run: python -m eval.financial
+
+  frontend:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: Install
+        run: npm ci
+      - name: Lint (eslint)
+        run: npm run lint
+      - name: Types (tsc)
+        run: npm run typecheck
+      - name: Tests (vitest)
+        run: npm test
+      - name: Build (next build, standalone)
+        run: npm run build
+
+  terraform:
+    runs-on: ubuntu-latest
+    # The IaC has not yet had a first successful validate against the real
+    # provider schemas — non-blocking until that baseline is established,
+    # then remove continue-on-error to make it a hard gate.
+    continue-on-error: true
+    defaults:
+      run:
+        working-directory: infra/terraform
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+      - name: Init (no backend)
+        run: terraform init -backend=false
+      - name: Validate
+        run: terraform validate

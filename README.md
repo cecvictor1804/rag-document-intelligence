@@ -1,5 +1,7 @@
 # Financial Document Intelligence
 
+[![CI](https://github.com/cecvictor1804/rag-document-intelligence/actions/workflows/ci.yml/badge.svg)](https://github.com/cecvictor1804/rag-document-intelligence/actions/workflows/ci.yml)
+
 Grounded, cited, and **computed** answers over financial documents — SEC filings
 (10-K/10-Q), earnings materials, and internal statements — behind Google Workspace
 SSO. Unlike a generic document chatbot, **tables and numbers are first-class**: figures
@@ -22,6 +24,9 @@ by an LLM, and every number in an answer cites the exact source cell it came fro
 > GAAP↔non-GAAP counterparts, segment revenue, async multi-page Textract, a
 > parallel financial path in the SQS worker, and a human-in-the-loop review
 > queue). Remaining ideas live in the [Roadmap](#roadmap).
+
+> Deep dive: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) — the full tech
+> report with the tradeoffs behind every component choice.
 
 ## Contents
 
@@ -295,6 +300,11 @@ make typecheck   # mypy
 ```
 
 Frontend: `cd frontend && npm run typecheck && npm test && npm run build`.
+
+**CI** (`.github/workflows/ci.yml`) runs the same gate on every push/PR:
+backend lint + types + tests + the offline financial eval, the frontend suite +
+production build, and Terraform validate (non-blocking until its first green
+baseline, then flip it to a hard gate by removing `continue-on-error`).
 
 ## Deployment
 
